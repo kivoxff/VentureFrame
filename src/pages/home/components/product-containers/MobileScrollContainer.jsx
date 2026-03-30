@@ -25,10 +25,10 @@ const LoadMoreCard = ({ loadMore, hasMore = true, loading = false }) => {
 };
 
 const MobileScrollCard = ({ product }) => {
-  const { id, name, price, oldPrice, images = [], category, company } = product;
-  const image = images[0]?.url;
+  const { id, name, seller, salePrice, mrp, thumbnails, company } = product;
+  const thumbnail = thumbnails[0]?.url;
 
-  const isSale = oldPrice && oldPrice > price;
+  const isSale = mrp && mrp > salePrice;
 
   return (
     <Link
@@ -37,7 +37,7 @@ const MobileScrollCard = ({ product }) => {
     >
       <div className="w-full aspect-square overflow-hidden relative">
         <img
-          src={image}
+          src={thumbnail}
           alt="productImg"
           className="w-full h-full object-cover transform group-hover:scale-110 transition-transform duration-500"
         />
@@ -63,12 +63,10 @@ const MobileScrollCard = ({ product }) => {
         <h2 className="pb-1 truncate text-md font-semibold group-hover:text-rose-500">
           {name}
         </h2>
-        <span className="pr-3 text-xl font-bold">₹{price}</span>
+        <span className="pr-3 text-xl font-bold">₹{salePrice}</span>
 
         {isSale && (
-          <span className="text-gray-400 text-sm line-through ">
-            ₹{oldPrice}
-          </span>
+          <span className="text-gray-400 text-sm line-through ">₹{mrp}</span>
         )}
       </div>
     </Link>

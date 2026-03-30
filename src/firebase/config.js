@@ -21,14 +21,14 @@ export const storage = getStorage(app);
 export const functions = getFunctions(app);
 export default app;
 
-// if (window.location.hostname === "localhost") {
-//   connectFunctionsEmulator(functions, "localhost", 5001);
-//   connectAuthEmulator(auth, "http://localhost:9099");
-//   connectFirestoreEmulator(db, "localhost", 8080);
-//   connectStorageEmulator(storage, "localhost", 9199);
-// }
+if (window.location.hostname === "localhost") {
+  connectFunctionsEmulator(functions, "localhost", 5001);
+  connectAuthEmulator(auth, "http://localhost:9099");
+  connectFirestoreEmulator(db, "localhost", 8080);
+  connectStorageEmulator(storage, "localhost", 9199);
+}
 
-connectFunctionsEmulator(functions, "10.142.110.199", 5001);
-connectAuthEmulator(auth, "http://10.142.110.199:9099");
-connectFirestoreEmulator(db, "10.142.110.199", 8080);
-connectStorageEmulator(storage, "10.142.110.199", 9199);
+// connectFunctionsEmulator(functions, "10.93.130.199", 5001);
+// connectAuthEmulator(auth, "http://10.93.130.199:9099");
+// connectFirestoreEmulator(db, "10.93.130.199", 8080);
+// connectStorageEmulator(storage, "10.93.130.199", 9199);

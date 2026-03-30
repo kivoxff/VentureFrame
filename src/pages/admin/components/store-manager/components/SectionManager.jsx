@@ -1,19 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import SearchDropdown from "../../../../../components/ui/drop-downs/SearchDropdown";
 import { httpsCallable } from "firebase/functions";
 import { db, functions } from "../../../../../firebase/config";
-import {
-  collection,
-  doc,
-  getDoc,
-  onSnapshot,
-  serverTimestamp,
-  setDoc,
-  updateDoc,
-} from "firebase/firestore";
+import { collection, onSnapshot } from "firebase/firestore";
 import LoadMore from "../../../../../components/ui/misc/LoadMore";
 import { useSectionProducts } from "../../../../../hooks/useSectionProducts";
 import { useAuth } from "../../../../../context/AuthContext";
+import { useTime } from "../../../../../context/TimeContext";
 
 const SectionCard = ({
   section,
@@ -23,10 +16,10 @@ const SectionCard = ({
   removeSectionProduct,
   currentUser,
   cancelSecEdit,
-  offset,
 }) => {
   const [searchVal, setSearchVal] = useState("");
   const [isSecLockExp, setIsSecLockExp] = useState(false);
+  const { timeOffset: offset } = useTime();
 
   const LOCK_TIMEOUT_MS = 30 * 1000; // 15 minutes
   const HEARTBEAT_MS = 15 * 1000; // 10 minutes
@@ -244,46 +237,11 @@ const SectionCard = ({
 
 function SectionManager() {
   const { user } = useAuth();
-  const [timeOffset, setTimeOffset] = useState(0);
   const [productSections, setProductSections] = useState([]);
   const [formData, setFormData] = useState({
     title: "",
     type: "M-Grid",
   });
-
-  useEffect(() => {
-    // time sync only for ui
-    const syncServerTime = async () => {
-      const syncRef = doc(db, "storeConfig", "metadata");
-      const t0 = Date.now();
-      await setDoc(
-        syncRef,
-        {
-          now: serverTimestamp(),
-        },
-        { merge: true },
-      );
-
-      const syncSnap = await getDoc(syncRef);
-
-      const t1 = Date.now();
-
-      const serverTime = syncSnap.data().now.toMillis();
-      const clientMid = (t0 + t1) / 2;
-      const offset = serverTime - clientMid;
-
-      setTimeOffset(offset);
-      console.log(offset);
-    };
-
-    // run immediately
-    syncServerTime();
-
-    // run every 15 minutes
-    const interval = setInterval(syncServerTime, 15 * 60 * 1000);
-
-    return () => clearInterval(interval);
-  }, []);
 
   useEffect(() => {
     const sectionsRef = collection(db, "storeConfig", "metadata", "sections");
@@ -544,7 +502,6 @@ function SectionManager() {
             removeSectionProduct={removeSectionProduct}
             currentUser={user?.userId}
             cancelSecEdit={cancelSecEdit}
-            offset={timeOffset}
           />
         ))}
       </div>

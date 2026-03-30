@@ -7,6 +7,8 @@ import {
 } from "firebase/firestore";
 import { useEffect, useState } from "react";
 import { db } from "../firebase/config";
+import { getServerNow } from "../context/TimeContext";
+import { calculateEffectiveStock } from "../utils/stockUtils";
 
 export const useSectionProducts = ({ productIds, PRODUCTS_PER_PAGE = 9 }) => {
   const [products, setProducts] = useState([]);
@@ -32,21 +34,69 @@ export const useSectionProducts = ({ productIds, PRODUCTS_PER_PAGE = 9 }) => {
       if (!chunk.length) return;
 
       const productsRef = collection(db, "products");
-      const q = query(productsRef, where(documentId(), "in", chunk));
+      const reservedRef = collection(db, "reservedProducts");
 
-      const snap = await getDocs(q);
-      const fetched = snap.docs.map((doc) => {
+      const qProducts = query(productsRef, where(documentId(), "in", chunk));
+      const qReserved = query(reservedRef, where(documentId(), "in", chunk));
+
+      const [productsSnap, reservedSnap] = await Promise.all([
+        getDocs(qProducts),
+        getDocs(qReserved),
+      ]);
+
+      // Create a fast lookup map for reservations
+      const reservedMap = {};
+      reservedSnap.forEach((doc) => {
+        reservedMap[doc.id] = doc.data();
+      });
+
+      const now = await getServerNow();
+
+      const fetched = productsSnap.docs.map((doc) => {
+        const productData = doc.data();
+        const reservedData = reservedMap[doc.id];
+
+        const effectiveStock = calculateEffectiveStock(
+          productData.stock,
+          reservedData,
+          now,
+        );
+        const effectiveStatus =
+          effectiveStock > 0 ? "In Stock" : "Out of Stock";
+
         const {
           title: name,
           productId: id,
-          stockStatus: status,
+          // stockStatus: status,
+          // stock: count,
           storeName: seller,
-          originalPrice: oldPrice,
+          price: salePrice,
+          originalPrice: mrp,
+          images: thumbnails,
           brand: company,
-          ...data
-        } = doc.data();
+          options: variants,
+          features: highlights,
+          category: type,
+          description: details,
+          specs: attributes,
+        } = productData;
 
-        return { id, name, status, seller, oldPrice, company, ...data };
+        return {
+          id,
+          name,
+          status: effectiveStatus,
+          count: effectiveStock,
+          seller,
+          salePrice,
+          mrp,
+          thumbnails,
+          company,
+          variants,
+          highlights,
+          type,
+          attributes,
+          details,
+        };
       });
 
       setProducts((prev) => [...prev, ...fetched]);

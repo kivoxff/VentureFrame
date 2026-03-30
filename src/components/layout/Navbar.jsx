@@ -10,6 +10,8 @@ import SearchDropdown from "../ui/drop-downs/SearchDropdown";
 import UserMenuDropdown from "../ui/drop-downs/UserMenuDropdown";
 import { useAuth } from "../../context/AuthContext";
 import Loader from "../ui/misc/Loader";
+import { useDispatch, useSelector } from "react-redux";
+import { fetchCartThunk } from "../../redux/cart/cartThunk";
 
 function Navbar() {
   const data = [
@@ -38,6 +40,9 @@ function Navbar() {
   const { user, hasRole, googleLogin: login, authLoading } = useAuth();
   const firstName = user?.displayName?.split(" ").at(0) || "Account";
   const isSeller = hasRole("seller");
+  const dispatch = useDispatch();
+  const { cartItems } = useSelector((state) => state.cart);
+  const cartItemsCount = cartItems?.length > 9 ? "9+" : cartItems.length;
 
   useEffect(() => {
     // ouside click
@@ -50,6 +55,10 @@ function Navbar() {
     document.addEventListener("click", handleOutsideClick);
     return () => document.removeEventListener("click", handleOutsideClick);
   }, []);
+
+  useEffect(() => {
+    dispatch(fetchCartThunk({ uid: user?.userId }));
+  }, [user]);
 
   const handleLoginClick = () => {
     if (!user) {
@@ -138,7 +147,7 @@ function Navbar() {
             className="group h-2/3 flex flex-col justify-center items-center border relative"
           >
             <div className="w-4 h-4 md:h-3.5 flex justify-center items-center absolute top-0 -right-1 md:-top-1 md:-right-1 bg-red-500 text-[10px] text-white font-medium font-mono rounded-full">
-              9+
+              {cartItemsCount}
             </div>
             <img src={cartIcon} alt="Seller" className="w-7 md:w-5" />
             <span className="hidden md:flex text-xs font-semibold group-hover:text-orange-500">

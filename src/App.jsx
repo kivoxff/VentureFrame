@@ -2,7 +2,8 @@ import { Route, Routes } from "react-router-dom";
 import Home from "./pages/home/Home";
 import ProductDetails from "./pages/product-details/ProductDetails";
 import ProductList from "./pages/product-list/ProductList";
-import Cart from "./pages/cart/cart";
+import Cart from "./pages/cart/Cart";
+import Payment from "./pages/checkout/components/Payment";
 import Checkout from "./pages/checkout/Checkout";
 import Orders from "./pages/orders/Orders";
 import OrderDetails from "./pages/orders/OrderDetails";
@@ -30,6 +31,7 @@ function App() {
       <Route path="/product-details/:pid" element={<ProductDetails />} />
       <Route path="/product-list" element={<ProductList />} />
       <Route path="/cart" element={<Cart />} />
+      <Route path="/payment" element={<Payment />} />
       <Route path="/checkout" element={<Checkout />} />
       <Route path="/orders" element={<Orders />} />
       <Route path="/order-details" element={<OrderDetails />} />

@@ -6,6 +6,8 @@ import ProductReviews from "./product-reviews/ProductReviews";
 import { useEffect, useState } from "react";
 import { doc, getDoc } from "firebase/firestore";
 import { db } from "../../firebase/config";
+import { getServerNow } from "../../context/TimeContext";
+import { calculateEffectiveStock } from "../../utils/stockUtils";
 
 function ProductDetails() {
   const { pid } = useParams();
@@ -14,29 +16,61 @@ function ProductDetails() {
   useEffect(() => {
     const fetchProduct = async () => {
       const productRef = doc(db, "products", pid);
-      const productSnap = await getDoc(productRef);
+      const reservedRef = doc(db, "reservedProducts", pid);
+
+      const [productSnap, reservedSnap] = await Promise.all([
+        getDoc(productRef),
+        getDoc(reservedRef),
+      ]);
+
       if (productSnap.exists()) {
+        const productData = productSnap.data();
+        const reservedData = reservedSnap.exists() ? reservedSnap.data() : null;
+        
+        const now = await getServerNow();
+
+        const effectiveStock = await calculateEffectiveStock(
+          productData.stock,
+          reservedData,
+          now,
+        );
+        const effectiveStatus =
+          effectiveStock > 0 ? "In Stock" : "Out of Stock";
+
         const {
-          productId: id,
           title: name,
-          stockStatus: status,
+          productId: id,
+          // stockStatus: status,
           storeName: seller,
-          originalPrice: oldPrice,
+          price: salePrice,
+          originalPrice: mrp,
+          images: thumbnails,
+          brand: company,
+          options: variants,
           features: highlights,
-          ...data
+          category: type,
+          description: details,
+          specs: attributes,
         } = productSnap.data();
 
         setProduct({
           id,
           name,
-          status,
+          status: effectiveStatus,
+          count: effectiveStock,
           seller,
-          oldPrice,
+          salePrice,
+          mrp,
+          thumbnails,
+          company,
+          variants,
           highlights,
+          type,
+          attributes,
+          details,
           rating: 4.6,
           ratings: { 5: 20, 4: 50, 3: 10, 2: 20, 1: 5 },
           reviews: 2543,
-          ...data,
         }); // change: rating
       }
     };
@@ -44,9 +78,7 @@ function ProductDetails() {
     fetchProduct();
   }, [pid]);
 
-  if(!product) return(
-    <h1>Loading...</h1>
-  )
+  if (!product) return <h1>Loading...</h1>;
 
   return (
     <AppLayout>

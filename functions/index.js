@@ -7,6 +7,7 @@ admin.initializeApp();
 const db = admin.firestore();
 const storage = admin.storage();
 
+
 exports.createNewUser = functions.auth.user().onCreate(async (user) => {
   try {
     await admin.auth().setCustomUserClaims(user.uid, {
@@ -571,6 +572,178 @@ exports.unlockSection = functions.https.onCall(async (data, context) => {
   }
 });
 
+exports.createOrder = functions.https.onCall(async (data, context) => {
+  const uid = context.auth.uid;
+  const { products, paymentMethod = "ONLINE" } = data; // Expect "COD" or "ONLINE"
+
+  if (!products || !products.length) {
+    throw new functions.https.HttpsError(
+      "invalid-argument",
+      "No Products Provided",
+    );
+  }
+  if (!["COD", "ONLINE"].includes(paymentMethod)) {
+    throw new functions.https.HttpsError(
+      "invalid-argument",
+      "Invalid Payment Method",
+    );
+  }
+
+  const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+
+  const EXPIRY_TIME = 10 * 60 * 1000; // 10 minutes
+
+  const transactionResult = await db.runTransaction(async (tx) => {
+    // Pre-generate the Order ID so we can use it as our unique reservation key
+    const orderRef = db.collection("orders").doc();
+    const orderId = orderRef.id;
+
+    const productRefs = products.map((p) => db.doc(`products/${p.id}`));
+    const reservedRefs = products.map((p) =>
+      db.doc(`reservedProducts/${p.id}`),
+    );
+
+    const allSnaps = await tx.getAll(...productRefs, ...reservedRefs);
+    const productSnaps = allSnaps.slice(0, products.length);
+    const reservedSnaps = allSnaps.slice(products.length);
+
+    const now = Timestamp.now().toMillis();
+    const productWrites = [];
+    const reservedWrites = [];
+    let orderItems = [];
+
+    // Process each product
+    for (let i = 0; i < products.length; i++) {
+      const { id, qty } = products[i];
+      const productSnap = productSnaps[i];
+      const reservedSnap = reservedSnaps[i];
+
+      if (!productSnap.exists) {
+        throw new functions.https.HttpsError("not-found", `${id} not found`);
+      }
+
+      const productData = productSnap.data();
+      const actualStock = productData.stock;
+
+      let reservedData = reservedSnap.exists ? reservedSnap.data() : {};
+      let totalReservedStock = 0;
+
+      // Clean up expired reservations (from ALL users/orders)
+      for (const resOrderId in reservedData) {
+        const reservation = reservedData[resOrderId];
+
+        const isExpired = now - reservation.reservedAt.toMillis() > EXPIRY_TIME;
+
+        if (isExpired) {
+          delete reservedData[resOrderId];
+        } else {
+          totalReservedStock += reservation.quantity;
+        }
+      }
+
+      // Calculate what is actually safe to sell right now
+      const availableStock = actualStock - totalReservedStock;
+
+      if (qty > availableStock) {
+        throw new functions.https.HttpsError(
+          "failed-precondition",
+          `${id} out of stock. Only ${availableStock} available.`,
+        );
+      }
+
+      // Branch logic based on Payment Method
+      if (paymentMethod === "COD") {
+        // COD: Deduct actual stock immediately
+        productWrites.push({
+          ref: productRefs[i],
+          data: { stock: actualStock - qty }, // Subtract from actual stock
+        });
+
+        // We still need to write the cleaned-up reservations back to the DB
+        reservedWrites.push({ ref: reservedRefs[i], data: reservedData });
+      } else if (paymentMethod === "ONLINE") {
+        // ONLINE: Add to reservations using the ORDER ID (prevents multi-order overwrite bugs)
+        reservedData[orderId] = {
+          uid: uid,
+          quantity: qty,
+          reservedAt: FieldValue.serverTimestamp(),
+        };
+
+        reservedWrites.push({ ref: reservedRefs[i], data: reservedData });
+      }
+
+      orderItems.push({
+        id,
+        name: productData.title,
+        quantity: qty,
+        price: productData.price,
+      });
+    }
+
+    // Apply all writes safely within the transaction
+    for (const write of productWrites) {
+      tx.update(write.ref, write.data);
+    }
+    for (const write of reservedWrites) {
+      tx.set(write.ref, write.data);
+    }
+
+    // Create the final order document
+    const initialStatus =
+      paymentMethod === "COD" ? "PROCESSING" : "PENDING_PAYMENT";
+
+    tx.set(orderRef, {
+      userId: uid,
+      items: orderItems,
+      paymentMethod: paymentMethod,
+      status: initialStatus,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+
+    return { orderId: orderId, status: initialStatus, orderItems };
+  });
+
+  // STRIPE Checkout session
+
+  if (paymentMethod === "ONLINE") {
+    try {
+      const orderTotal = transactionResult.orderItems.reduce((total, item) => {
+        return total + item.price * item.quantity;
+      }, 0);
+
+      // 2. Create the PaymentIntent
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: Math.round(orderTotal * 100), // Convert INR to Paise
+        currency: "inr",
+        // Keep metadata so the Webhook still knows which order to fulfill!
+        metadata: {
+          orderId: transactionResult.orderId,
+          uid: uid,
+        },
+      });
+
+      // 3. Return the client_secret to the frontend!
+      return {
+        orderId: transactionResult.orderId,
+        status: transactionResult.status,
+        clientSecret: paymentIntent.client_secret,
+      };
+    } catch (err) {
+      console.error("Stripe Error:", err);
+      throw new functions.https.HttpsError(
+        "internal",
+        "Payment session failed.",
+      );
+    }
+  } else {
+    // COD
+    return {
+      orderId: transactionResult.orderId,
+      status: transactionResult.status,
+    };
+  }
+});
+
 // Testing
 exports.seedTestProducts = functions.https.onCall(async (data, context) => {
   try {
@@ -622,7 +795,6 @@ exports.seedTestProducts = functions.https.onCall(async (data, context) => {
             path: null,
           },
         ],
-        createdAt: FieldValue.serverTimestamp(),
       };
 
       batch.set(productRef, productData);

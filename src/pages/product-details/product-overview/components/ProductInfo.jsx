@@ -4,11 +4,11 @@ function ProductInfo({ product }) {
   const [selectedOptions, setSelectedOptions] = useState(() =>
     Object.fromEntries(
       // object from array of array's
-      product.options.map(({ name: key, values }) => [key, values[0]]),
+      product.variants.map(({ name: key, values }) => [key, values[0]]),
     ),
   );
 
-  console.log(product.options.map(({ name: key, values }) => [key, values[0]]));
+  console.log(product.variants.map(({ name: key, values }) => [key, values[0]]));
 
   const [quantity, setQuantity] = useState(1);
   const formatNum = (num) => num.toLocaleString("en-IN");
@@ -22,12 +22,12 @@ function ProductInfo({ product }) {
       <h1 className="text-3xl font-semibold capitalize">{product.name}</h1>
 
       <div className="flex items-center gap-3 flex-wrap mt-2">
-        <span className="text-2xl font-bold">₹{formatNum(product.price)}</span>
+        <span className="text-2xl font-bold">₹{formatNum(product.salePrice)}</span>
         <span className="line-through text-gray-400">
-          ₹{formatNum(product.oldPrice)}
+          ₹{formatNum(product.mrp)}
         </span>
         <span className="text-green-600 font-medium">
-          Save up to ₹{formatNum(product.oldPrice - product.price)}
+          Save up to ₹{formatNum(product.mrp - product.salePrice)}
         </span>
       </div>
 
@@ -50,7 +50,7 @@ function ProductInfo({ product }) {
 
       {/* Options */}
       <div className="mt-8 space-y-5">
-        {product.options.map(({ name: key, values }, idx) => (
+        {product.variants.map(({ name: key, values }, idx) => (
           <div key={key}>
             <h3 className="font-semibold mb-2 capitalize">{key}</h3>
             <div className="flex flex-wrap gap-3">

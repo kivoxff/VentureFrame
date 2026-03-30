@@ -5,7 +5,7 @@ import OrderSuccess from "./components/OrderSuccess";
 import FloatingNavButtons from "../../components/ui/misc/FloatingNavButtons";
 
 const Checkout = () => {
-  const [step, setStep] = useState(1);
+  const [step, setStep] = useState(2);
 
   return (
     <section className="flex flex-wrap justify-center gap-4">

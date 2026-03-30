@@ -1,10 +1,40 @@
-function OrderSummary({ type = "cart" }) {
+import { useState } from "react";
+import { httpsCallable } from "firebase/functions";
+import { functions } from "../../firebase/config";
+import { useNavigate } from "react-router-dom";
+
+function OrderSummary({ type = "cart", products }) {
+  const navigate = useNavigate();
+  const [isProcessing, setIsProcessing] = useState(false);
+
+  const handleCheckout = async () => {
+    if (!products || products.length === 0) return;
+
+    setIsProcessing(true);
+    try {
+      const createOrder = httpsCallable(functions, "createOrder");
+      const response = await createOrder({ products, paymentMethod: "ONLINE" });
+
+      const { orderId, status, clientSecret } = response.data;
+
+      if (clientSecret) {
+        navigate(`/payment?secret=${clientSecret}&orderId=${orderId}`);
+      } else if (status === "PROCESSING") {
+        navigate(`/checkout`);
+      }
+    } catch (error) {
+      console.error("Order creation failed:", error.message);
+      alert("Something went wrong creating your order.");
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   return (
     <div className="p-3 w-full sm:flex-1 h-fit rounded-2xl border">
       <h3 className="font-bold text-xl">Order Summery</h3>
 
-      {
-        type === "checkout" &&
+      {type === "checkout" && (
         <div className="mb-2 border-b">
           <p className="mb-2 flex justify-between">
             <span>I Phone</span>
@@ -15,7 +45,7 @@ function OrderSummary({ type = "cart" }) {
             <span className="font-semibold">₹4999</span>
           </p>
         </div>
-      }
+      )}
 
       <div>
         <p className="mb-2 flex justify-between">
@@ -33,20 +63,30 @@ function OrderSummary({ type = "cart" }) {
         </p>
       </div>
 
-      {
-        type === "cart" &&
+      {type === "cart" && (
         <div>
           <div className="mb-2 flex justify-between gap-2">
-            <input type="text" placeholder="Add promo code" className="min-w-0 p-2 border rounded-2xl flex-1" />
-            <button className="p-3 bg-violet-700 hover:bg-violet-600 rounded-full text-white font-bold">Apply</button>
+            <input
+              type="text"
+              placeholder="Add promo code"
+              className="min-w-0 p-2 border rounded-2xl flex-1"
+            />
+            <button className="p-3 bg-violet-700 hover:bg-violet-600 rounded-full text-white font-bold">
+              Apply
+            </button>
           </div>
 
-          <button className="w-full p-3 bg-violet-700 hover:bg-violet-600 text-white font-bold ">Proceed to Checkout</button>
+          <button
+            onClick={handleCheckout}
+            disabled={isProcessing}
+            className="w-full p-3 bg-violet-700 hover:bg-violet-600 text-white font-bold "
+          >
+            {isProcessing ? "Processing..." : "Proceed to Checkout"}
+          </button>
         </div>
-      }
+      )}
     </div>
-
-  )
+  );
 }
 
 export default OrderSummary;
