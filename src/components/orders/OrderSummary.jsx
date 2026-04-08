@@ -1,90 +1,64 @@
-import { useState } from "react";
-import { httpsCallable } from "firebase/functions";
-import { functions } from "../../firebase/config";
-import { useNavigate } from "react-router-dom";
+function OrderSummary({
+  products = [],
+  discount = 0,
+  FREE_DELIVERY_THRESHOLD = 500,
+  DELIVERY_CHARGE = 50,
+}) {
+  // 🔹 Calculate subtotal
+  const subTotal = products.reduce(
+    (acc, item) => acc + item.salePrice * item.qty,
+    0,
+  );
 
-function OrderSummary({ type = "cart", products }) {
-  const navigate = useNavigate();
-  const [isProcessing, setIsProcessing] = useState(false);
-
-  const handleCheckout = async () => {
-    if (!products || products.length === 0) return;
-
-    setIsProcessing(true);
-    try {
-      const createOrder = httpsCallable(functions, "createOrder");
-      const response = await createOrder({ products, paymentMethod: "ONLINE" });
-
-      const { orderId, status, clientSecret } = response.data;
-
-      if (clientSecret) {
-        navigate(`/payment?secret=${clientSecret}&orderId=${orderId}`);
-      } else if (status === "PROCESSING") {
-        navigate(`/checkout`);
-      }
-    } catch (error) {
-      console.error("Order creation failed:", error.message);
-      alert("Something went wrong creating your order.");
-    } finally {
-      setIsProcessing(false);
-    }
-  };
+  const delivery = subTotal >= FREE_DELIVERY_THRESHOLD ? 0 : DELIVERY_CHARGE;
+  const total = subTotal + delivery - discount;
 
   return (
-    <div className="p-3 w-full sm:flex-1 h-fit rounded-2xl border">
-      <h3 className="font-bold text-xl">Order Summery</h3>
+    <div className="p-3 w-full sm:flex-1 max-h-fit rounded-2xl border">
+      <h3 className="font-bold text-xl">Order Summary</h3>
 
-      {type === "checkout" && (
-        <div className="mb-2 border-b">
-          <p className="mb-2 flex justify-between">
-            <span>I Phone</span>
-            <span className="font-semibold">₹9999</span>
+      {/* Product List */}
+      <div className="mb-2 border-b">
+        {products.map((item) => (
+          <p key={item.id} className="mb-2 flex justify-between">
+            <span>
+              {item.name} × {item.qty}
+            </span>
+            <span className="font-semibold">₹{item.salePrice * item.qty}</span>
           </p>
-          <p className="mb-2 flex justify-between">
-            <span>Charger</span>
-            <span className="font-semibold">₹4999</span>
-          </p>
-        </div>
-      )}
+        ))}
+      </div>
 
+      {/* Price Breakdown */}
       <div>
         <p className="mb-2 flex justify-between">
           <span className="font-light">Subtotal</span>
-          <span className="font-semibold">₹999</span>
+          <span className="font-semibold">₹{subTotal}</span>
         </p>
+
+        {discount > 0 && (
+          <p className="mb-2 flex justify-between">
+            <span className="font-light">Discount</span>
+            <span className="font-semibold">- ₹{discount}</span>
+          </p>
+        )}
+
         <p className="mb-2 flex justify-between">
           <span className="font-light">Delivery</span>
-          <span className="font-semibold">₹0</span>
+          <span className="font-semibold">
+            {delivery === 0 ? (
+              <span className="text-green-700"> Free</span>
+            ) : (
+              <span>₹{delivery}</span>
+            )}
+          </span>
         </p>
 
         <p className="mb-2 border-t flex justify-between">
           <span className="font-medium">Total</span>
-          <span className="font-semibold text-violet-700">₹999</span>
+          <span className="font-semibold text-violet-700">₹{total}</span>
         </p>
       </div>
-
-      {type === "cart" && (
-        <div>
-          <div className="mb-2 flex justify-between gap-2">
-            <input
-              type="text"
-              placeholder="Add promo code"
-              className="min-w-0 p-2 border rounded-2xl flex-1"
-            />
-            <button className="p-3 bg-violet-700 hover:bg-violet-600 rounded-full text-white font-bold">
-              Apply
-            </button>
-          </div>
-
-          <button
-            onClick={handleCheckout}
-            disabled={isProcessing}
-            className="w-full p-3 bg-violet-700 hover:bg-violet-600 text-white font-bold "
-          >
-            {isProcessing ? "Processing..." : "Proceed to Checkout"}
-          </button>
-        </div>
-      )}
     </div>
   );
 }

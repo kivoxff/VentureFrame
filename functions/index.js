@@ -7,7 +7,6 @@ admin.initializeApp();
 const db = admin.firestore();
 const storage = admin.storage();
 
-
 exports.createNewUser = functions.auth.user().onCreate(async (user) => {
   try {
     await admin.auth().setCustomUserClaims(user.uid, {
@@ -572,9 +571,132 @@ exports.unlockSection = functions.https.onCall(async (data, context) => {
   }
 });
 
+exports.createCoupon = functions.https.onCall(async (data, context) => {
+  const { code, type, value, minOrder, usageLimit, expiry } = data;
+
+  if (!code || !value) {
+    throw new functions.https.HttpsError("invalid-argument", "Missing fields");
+  }
+
+  if (!["PERCENT", "FLAT"].includes(type)) {
+    throw new functions.https.HttpsError("invalid-argument", "Invalid type");
+  }
+
+  if (type === "PERCENT" && value > 100) {
+    throw new functions.https.HttpsError("invalid-argument", "Max 100%");
+  }
+
+  const couponRef = db.collection("coupons").doc(code);
+
+  const existing = await couponRef.get();
+  if (existing.exists) {
+    throw new functions.https.HttpsError("already-exists", "Coupon exists");
+  }
+
+  await couponRef.set({
+    code,
+    type,
+    value: Number(value),
+    minOrder: Number(minOrder) || 0,
+    usageLimit: Number(usageLimit) || null,
+    usedCount: 0,
+    expiry: expiry ? Timestamp.fromDate(new Date(expiry)) : null,
+    isActive: true,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+
+  return { success: true };
+});
+
+exports.deleteCoupon = functions.https.onCall(async (data, context) => {
+  const { code } = data;
+
+  const couponRef = db.collection("coupons").doc(code);
+  const snap = await couponRef.get();
+
+  if (!snap.exists) {
+    throw new functions.https.HttpsError("not-found", "Coupon not found");
+  }
+
+  await couponRef.delete();
+
+  return { success: true };
+});
+
+exports.validateCoupon = functions.https.onCall(async (data, context) => {
+  const { code, subTotal } = data;
+
+  if (!code || subTotal === undefined) {
+    throw new functions.https.HttpsError(
+      "invalid-argument",
+      "Missing code or sub total.",
+    );
+  }
+
+  const couponRef = db.collection("coupons").doc(code);
+  const snap = await couponRef.get();
+
+  if (!snap.exists) {
+    throw new functions.https.HttpsError("not-found", "Invalid coupon code.");
+  }
+
+  const coupon = snap.data();
+
+  if (!coupon.isActive) {
+    throw new functions.https.HttpsError(
+      "failed-precondition",
+      "This coupon is no longer active.",
+    );
+  }
+
+  // Check expiration date
+  if (coupon.expiry) {
+    const now = new Date();
+    const expiryDate = coupon.expiry.toDate(); // Convert Firestore Timestamp to JS Date
+    if (now > expiryDate) {
+      throw new functions.https.HttpsError(
+        "failed-precondition",
+        "This coupon has expired.",
+      );
+    }
+  }
+
+  // Check usage limit
+  if (coupon.usageLimit && coupon.usedCount >= coupon.usageLimit) {
+    throw new functions.https.HttpsError(
+      "failed-precondition",
+      "This coupon has reached its usage limit.",
+    );
+  }
+
+  // Check minimum order amount
+  if (coupon.minOrder && subTotal < coupon.minOrder) {
+    throw new functions.https.HttpsError(
+      "failed-precondition",
+      `Your cart total must be at least ₹${coupon.minOrder} to use this coupon.`,
+    );
+  }
+
+  // --- Calculate the actual discount ---
+  let discountAmount = 0;
+  if (coupon.type === "PERCENT") {
+    discountAmount = (subTotal * coupon.value) / 100;
+  } else if (coupon.type === "FLAT") {
+    discountAmount = coupon.value;
+  }
+
+  // Prevent the discount from making the order total negative
+  discountAmount = Math.min(discountAmount, subTotal);
+
+  return {
+    success: true,
+    discountAmount: Number(discountAmount.toFixed(2)),
+  };
+});
+
 exports.createOrder = functions.https.onCall(async (data, context) => {
   const uid = context.auth.uid;
-  const { products, paymentMethod = "ONLINE" } = data; // Expect "COD" or "ONLINE"
+  const { products, paymentMethod = "ONLINE", couponCode } = data; // Expect "COD" or "ONLINE"
 
   if (!products || !products.length) {
     throw new functions.https.HttpsError(
@@ -607,10 +729,11 @@ exports.createOrder = functions.https.onCall(async (data, context) => {
     const productSnaps = allSnaps.slice(0, products.length);
     const reservedSnaps = allSnaps.slice(products.length);
 
-    const now = Timestamp.now().toMillis();
+    const now = Timestamp.now();
     const productWrites = [];
     const reservedWrites = [];
     let orderItems = [];
+    let subTotal = 0;
 
     // Process each product
     for (let i = 0; i < products.length; i++) {
@@ -625,6 +748,8 @@ exports.createOrder = functions.https.onCall(async (data, context) => {
       const productData = productSnap.data();
       const actualStock = productData.stock;
 
+      subTotal += productData.price * qty;
+
       let reservedData = reservedSnap.exists ? reservedSnap.data() : {};
       let totalReservedStock = 0;
 
@@ -632,7 +757,8 @@ exports.createOrder = functions.https.onCall(async (data, context) => {
       for (const resOrderId in reservedData) {
         const reservation = reservedData[resOrderId];
 
-        const isExpired = now - reservation.reservedAt.toMillis() > EXPIRY_TIME;
+        const isExpired =
+          now.toMillis() - reservation.reservedAt.toMillis() > EXPIRY_TIME;
 
         if (isExpired) {
           delete reservedData[resOrderId];
@@ -666,7 +792,7 @@ exports.createOrder = functions.https.onCall(async (data, context) => {
         reservedData[orderId] = {
           uid: uid,
           quantity: qty,
-          reservedAt: FieldValue.serverTimestamp(),
+          reservedAt: now,
         };
 
         reservedWrites.push({ ref: reservedRefs[i], data: reservedData });
@@ -679,6 +805,115 @@ exports.createOrder = functions.https.onCall(async (data, context) => {
         price: productData.price,
       });
     }
+
+    // COUPON RESERVATION LOGIC
+
+    // Prepare Coupon References if provided
+    let couponSnap = null;
+    let reservedCouponSnap = null;
+
+    if (couponCode) {
+      const couponRef = db.collection("coupons").doc(couponCode);
+      const reservedCouponRef = db
+        .collection("reservedCoupons")
+        .doc(couponCode);
+
+      // Fetch coupon data
+      const couponSnaps = await tx.getAll(couponRef, reservedCouponRef);
+      couponSnap = couponSnaps[0];
+      reservedCouponSnap = couponSnaps[1];
+    }
+
+    let discountAmount = 0;
+
+    if (couponCode && couponSnap && couponSnap.exists) {
+      const couponData = couponSnap.data();
+
+      if (couponData.expiryDate) {
+        const isExpired = now.toMillis() > couponData.expiryDate.toMillis();
+
+        if (isExpired) {
+          throw new functions.https.HttpsError(
+            "failed-precondition",
+            "Coupon expired.",
+          );
+        }
+      }
+
+      if (couponData.usedBy && couponData.usedBy[uid]) {
+        throw new functions.https.HttpsError(
+          "failed-precondition",
+          "You have already used this coupon",
+        );
+      }
+
+      // Clean up expired coupon reservations
+      let reservedCouponData = reservedCouponSnap.exists
+        ? reservedCouponSnap.data()
+        : {};
+
+      let reservedCouponCount = 0;
+
+      for (const resOrderId in reservedCouponData) {
+        const isExpired =
+          now.toMillis() -
+            reservedCouponData[resOrderId].reservedAt.toMillis() >
+          EXPIRY_TIME;
+        if (isExpired) {
+          delete reservedCouponData[resOrderId];
+        } else {
+          reservedCouponCount++;
+        }
+      }
+
+      // Check active status
+      if (!couponData.isActive) {
+        throw new functions.https.HttpsError(
+          "failed-precondition",
+          "Coupon is not active.",
+        );
+      }
+
+      // Check usage limit (only if limit exists)
+      if (couponData.usageLimit != null) {
+        const used = (couponData.usedCount || 0) + reservedCouponCount;
+
+        if (used >= couponData.usageLimit) {
+          throw new functions.https.HttpsError(
+            "failed-precondition",
+            "Coupon usage limit reached.",
+          );
+        }
+      }
+
+      // Calculate Discount
+      if (couponData.type === "PERCENT") {
+        discountAmount = (subTotal * couponData.value) / 100;
+      } else {
+        discountAmount = couponData.value;
+      }
+
+      discountAmount = Math.min(discountAmount, subTotal);
+
+      // Branch Coupon Write
+      if (paymentMethod === "COD") {
+        // Increment usage immediately
+        tx.update(couponSnap.ref, {
+          usedCount: FieldValue.increment(1),
+          [`usedBy.${uid}`]: true,
+        });
+        tx.set(reservedCouponSnap.ref, reservedCouponData);
+      } else {
+        // Reserve for Online Payment
+        reservedCouponData[orderId] = {
+          uid: uid,
+          reservedAt: now,
+        };
+        tx.set(reservedCouponSnap.ref, reservedCouponData);
+      }
+    }
+
+    const finalAmount = subTotal - discountAmount;
 
     // Apply all writes safely within the transaction
     for (const write of productWrites) {
@@ -697,23 +932,22 @@ exports.createOrder = functions.https.onCall(async (data, context) => {
       items: orderItems,
       paymentMethod: paymentMethod,
       status: initialStatus,
+      couponCode: couponCode || null,
+      discountAmount,
+      totalAmount: finalAmount,
       createdAt: FieldValue.serverTimestamp(),
     });
 
-    return { orderId: orderId, status: initialStatus, orderItems };
+    return { orderId: orderId, status: initialStatus, orderItems, finalAmount };
   });
 
   // STRIPE Checkout session
 
   if (paymentMethod === "ONLINE") {
     try {
-      const orderTotal = transactionResult.orderItems.reduce((total, item) => {
-        return total + item.price * item.quantity;
-      }, 0);
-
       // 2. Create the PaymentIntent
       const paymentIntent = await stripe.paymentIntents.create({
-        amount: Math.round(orderTotal * 100), // Convert INR to Paise
+        amount: Math.round(transactionResult.finalAmount * 100), // Convert INR to Paise
         currency: "inr",
         // Keep metadata so the Webhook still knows which order to fulfill!
         metadata: {

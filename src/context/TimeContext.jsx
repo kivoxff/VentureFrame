@@ -25,7 +25,7 @@ const getServerOffset = async () => {
   return offsetPromise;
 };
 
-// 🔥 use anywhere (logic, API, etc.)
+// use anywhere (logic, API, etc.)
 export const getServerNow = async () => {
   const offset = await getServerOffset();
   return Date.now() + offset;
