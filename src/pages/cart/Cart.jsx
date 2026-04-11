@@ -4,7 +4,7 @@ import { fetchCartThunk } from "../../redux/cart/cartThunk";
 import { removeFromCart, updateQty } from "../../redux/cart/cartSlice";
 import { useAuth } from "../../context/AuthContext";
 
-import ProductItemCard from "../../components/products/ProductItemCard";
+import CartItemCard from "./CartItemCard";
 import OrderSummary from "../../components/orders/OrderSummary";
 import CouponBox from "../../components/orders/CouponBox";
 import crossIcon from "../../assets/icons/cross.svg";
@@ -36,7 +36,7 @@ const CartItemList = ({ products }) => {
   return (
     <div className="flex-1 flex flex-col gap-2 overflow-y-auto max-h-screen sm:max-h-[80vh]">
       {products.map((product) => (
-        <ProductItemCard
+        <CartItemCard
           key={product.id}
           product={product}
           actionButton={{

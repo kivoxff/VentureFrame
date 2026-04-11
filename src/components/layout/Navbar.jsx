@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useEffect, useRef, useState } from "react";
 import logo from "../../assets/images/logo.svg";
 import sellerIcon from "../../assets/icons/seller.svg";
@@ -40,6 +40,9 @@ function Navbar() {
   const { user, hasRole, googleLogin: login, authLoading } = useAuth();
   const firstName = user?.displayName?.split(" ").at(0) || "Account";
   const isSeller = hasRole("seller");
+
+  const navigate = useNavigate();
+
   const dispatch = useDispatch();
   const { cartItems } = useSelector((state) => state.cart);
   const cartItemsCount = cartItems?.length > 9 ? "9+" : cartItems.length;
@@ -70,6 +73,22 @@ function Navbar() {
     setShowDropdown((prev) => !prev);
   };
 
+  // Create the search handler
+  const handleSearch = () => {
+    if (searchVal.trim()) {
+      // Redirects to /product-list?query=yourSearchTerm
+      navigate(`/product-list?query=${encodeURIComponent(searchVal.trim())}`);
+      setShowSearch(false); // Closes the mobile search bar after searching
+      setShowDropdown(false);
+    }
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter") {
+      handleSearch();
+    }
+  };
+
   return (
     <nav className="px-1 w-full h-16 flex justify-around items-center shadow-md border">
       {/* Logo */}
@@ -91,6 +110,7 @@ function Navbar() {
           </button>
           <input
             onChange={(e) => setSearchVal(e.target.value)}
+            onKeyDown={handleKeyDown}
             value={searchVal}
             autoFocus
             type="text"
@@ -108,11 +128,14 @@ function Navbar() {
         <div className="w-60 sm:w-auto h-full flex justify-between items-center gap-4 border">
           {/* Desktop Search Bar */}
           <div className="hidden h-full sm:flex items-center border relative">
-            <button className="p-1.5 w-10 h-2/3 border rounded-l-full border-gray-400 bg-gray-100 hover:bg-gray-200">
+            <button
+            onClick={handleSearch}
+             className="p-1.5 w-10 h-2/3 border rounded-l-full border-gray-400 bg-gray-100 hover:bg-gray-200">
               <img src={searchIcon} alt="search" className="w-full h-full" />
             </button>
             <input
               onChange={(e) => setSearchVal(e.target.value)}
+              onKeyDown={handleKeyDown}
               value={searchVal}
               type="text"
               placeholder="Search Products"

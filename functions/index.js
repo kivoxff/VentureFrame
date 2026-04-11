@@ -1,5 +1,6 @@
 const functions = require("firebase-functions/v1");
 const admin = require("firebase-admin");
+const { algoliasearch } = require("algoliasearch");
 const { FieldValue, Timestamp } = require("firebase-admin/firestore");
 
 admin.initializeApp();
@@ -624,6 +625,8 @@ exports.deleteCoupon = functions.https.onCall(async (data, context) => {
 });
 
 exports.validateCoupon = functions.https.onCall(async (data, context) => {
+  const uid = context.auth.uid;
+
   const { code, subTotal } = data;
 
   if (!code || subTotal === undefined) {
@@ -661,11 +664,10 @@ exports.validateCoupon = functions.https.onCall(async (data, context) => {
     }
   }
 
-  // Check usage limit
-  if (coupon.usageLimit && coupon.usedCount >= coupon.usageLimit) {
+  if (coupon.usedBy && coupon.usedBy[uid]) {
     throw new functions.https.HttpsError(
       "failed-precondition",
-      "This coupon has reached its usage limit.",
+      "You have already used this coupon",
     );
   }
 
@@ -674,6 +676,14 @@ exports.validateCoupon = functions.https.onCall(async (data, context) => {
     throw new functions.https.HttpsError(
       "failed-precondition",
       `Your cart total must be at least ₹${coupon.minOrder} to use this coupon.`,
+    );
+  }
+
+  // Check usage limit
+  if (coupon.usageLimit && coupon.usedCount >= coupon.usageLimit) {
+    throw new functions.https.HttpsError(
+      "failed-precondition",
+      "This coupon has reached its usage limit.",
     );
   }
 
@@ -695,6 +705,7 @@ exports.validateCoupon = functions.https.onCall(async (data, context) => {
 });
 
 exports.createOrder = functions.https.onCall(async (data, context) => {
+  // INPUT VALIDATION & SETUP
   const uid = context.auth.uid;
   const { products, paymentMethod = "ONLINE", couponCode } = data; // Expect "COD" or "ONLINE"
 
@@ -711,64 +722,71 @@ exports.createOrder = functions.https.onCall(async (data, context) => {
     );
   }
 
-  const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
-
   const EXPIRY_TIME = 10 * 60 * 1000; // 10 minutes
+  const now = Timestamp.now();
 
   const transactionResult = await db.runTransaction(async (tx) => {
     // Pre-generate the Order ID so we can use it as our unique reservation key
     const orderRef = db.collection("orders").doc();
     const orderId = orderRef.id;
 
+    // Prepare references
     const productRefs = products.map((p) => db.doc(`products/${p.id}`));
-    const reservedRefs = products.map((p) =>
+    const resProductRefs = products.map((p) =>
       db.doc(`reservedProducts/${p.id}`),
     );
 
-    const allSnaps = await tx.getAll(...productRefs, ...reservedRefs);
-    const productSnaps = allSnaps.slice(0, products.length);
-    const reservedSnaps = allSnaps.slice(products.length);
+    const couponRef = couponCode
+      ? db.collection("coupons").doc(couponCode)
+      : null;
+    const resCouponRef = couponCode
+      ? db.collection("reservedCoupons").doc(couponCode)
+      : null;
 
-    const now = Timestamp.now();
-    const productWrites = [];
-    const reservedWrites = [];
-    let orderItems = [];
-    let subTotal = 0;
+    // Fetch products and coupons
+    const proCombinedSnap =
+      (await tx.getAll(...productRefs, ...resProductRefs)) || [];
+    const productSnaps = proCombinedSnap.slice(0, products.length);
+    const resProductSnaps = proCombinedSnap.slice(products.length);
+
+    const [couponSnap, resCouponSnap] = couponCode
+      ? await tx.getAll(couponRef, resCouponRef)
+      : []; // coupCombinedSnap | couponSnap | reCouponSnap
 
     // Process each product
-    for (let i = 0; i < products.length; i++) {
-      const { id, qty } = products[i];
-      const productSnap = productSnaps[i];
-      const reservedSnap = reservedSnaps[i];
+    const processedProducts = products.map((requestedProduct, index) => {
+      const { id, qty } = requestedProduct;
+      const productSnap = productSnaps[index];
+      const resProductSnap = resProductSnaps[index];
 
       if (!productSnap.exists) {
         throw new functions.https.HttpsError("not-found", `${id} not found`);
       }
 
       const productData = productSnap.data();
+      const resProductData = resProductSnap.exists ? resProductSnap.data() : {};
+
       const actualStock = productData.stock;
 
-      subTotal += productData.price * qty;
+      // Compute valid reservations and total reserved quantity in one pass
+      const { validProdRes, reservedStock } = Object.entries(
+        resProductData,
+      ).reduce(
+        (accumulator, [resId, reservation]) => {
+          const isExpired = reservation.expiresAt.toMillis() < now.toMillis();
 
-      let reservedData = reservedSnap.exists ? reservedSnap.data() : {};
-      let totalReservedStock = 0;
+          if (!isExpired) {
+            accumulator.validProdRes[resId] = reservation;
+            accumulator.reservedStock += reservation.quantity;
+          }
 
-      // Clean up expired reservations (from ALL users/orders)
-      for (const resOrderId in reservedData) {
-        const reservation = reservedData[resOrderId];
+          return accumulator;
+        },
+        { validProdRes: {}, reservedStock: 0 },
+      );
 
-        const isExpired =
-          now.toMillis() - reservation.reservedAt.toMillis() > EXPIRY_TIME;
-
-        if (isExpired) {
-          delete reservedData[resOrderId];
-        } else {
-          totalReservedStock += reservation.quantity;
-        }
-      }
-
-      // Calculate what is actually safe to sell right now
-      const availableStock = actualStock - totalReservedStock;
+      // final stock
+      const availableStock = actualStock - reservedStock;
 
       if (qty > availableStock) {
         throw new functions.https.HttpsError(
@@ -777,57 +795,44 @@ exports.createOrder = functions.https.onCall(async (data, context) => {
         );
       }
 
-      // Branch logic based on Payment Method
-      if (paymentMethod === "COD") {
-        // COD: Deduct actual stock immediately
-        productWrites.push({
-          ref: productRefs[i],
-          data: { stock: actualStock - qty }, // Subtract from actual stock
-        });
+      const { title: name, price } = productData;
 
-        // We still need to write the cleaned-up reservations back to the DB
-        reservedWrites.push({ ref: reservedRefs[i], data: reservedData });
-      } else if (paymentMethod === "ONLINE") {
-        // ONLINE: Add to reservations using the ORDER ID (prevents multi-order overwrite bugs)
-        reservedData[orderId] = {
-          uid: uid,
-          quantity: qty,
-          reservedAt: now,
-        };
-
-        reservedWrites.push({ ref: reservedRefs[i], data: reservedData });
-      }
-
-      orderItems.push({
+      return {
         id,
-        name: productData.title,
-        quantity: qty,
-        price: productData.price,
-      });
-    }
+        name,
+        price,
+        qty,
+        actualStock,
+        validProdRes,
+        productRef: productRefs[index],
+        resProductRef: resProductRefs[index],
+      };
+    });
 
-    // COUPON RESERVATION LOGIC
+    const orderItems = processedProducts.map((p) => ({
+      id: p.id,
+      name: p.name,
+      quantity: p.qty,
+      price: p.price,
+    }));
 
-    // Prepare Coupon References if provided
-    let couponSnap = null;
-    let reservedCouponSnap = null;
-
-    if (couponCode) {
-      const couponRef = db.collection("coupons").doc(couponCode);
-      const reservedCouponRef = db
-        .collection("reservedCoupons")
-        .doc(couponCode);
-
-      // Fetch coupon data
-      const couponSnaps = await tx.getAll(couponRef, reservedCouponRef);
-      couponSnap = couponSnaps[0];
-      reservedCouponSnap = couponSnaps[1];
-    }
+    const subTotal = processedProducts.reduce(
+      (sum, p) => sum + p.price * p.qty,
+      0,
+    );
 
     let discountAmount = 0;
 
+    // Process Coupon
     if (couponCode && couponSnap && couponSnap.exists) {
       const couponData = couponSnap.data();
+
+      if (!couponData.isActive) {
+        throw new functions.https.HttpsError(
+          "failed-precondition",
+          "Coupon is not active.",
+        );
+      }
 
       if (couponData.expiryDate) {
         const isExpired = now.toMillis() > couponData.expiryDate.toMillis();
@@ -847,36 +852,34 @@ exports.createOrder = functions.https.onCall(async (data, context) => {
         );
       }
 
-      // Clean up expired coupon reservations
-      let reservedCouponData = reservedCouponSnap.exists
-        ? reservedCouponSnap.data()
-        : {};
-
-      let reservedCouponCount = 0;
-
-      for (const resOrderId in reservedCouponData) {
-        const isExpired =
-          now.toMillis() -
-            reservedCouponData[resOrderId].reservedAt.toMillis() >
-          EXPIRY_TIME;
-        if (isExpired) {
-          delete reservedCouponData[resOrderId];
-        } else {
-          reservedCouponCount++;
-        }
-      }
-
-      // Check active status
-      if (!couponData.isActive) {
+      if (subTotal < couponData.minOrder) {
         throw new functions.https.HttpsError(
           "failed-precondition",
-          "Coupon is not active.",
+          `Order total must be at least ₹${couponData.minOrder} to use this coupon.`,
         );
       }
 
+      // Clean up expired coupon reservations
+      const resCouponData = resCouponSnap.exists ? resCouponSnap.data() : {};
+
+      const { validCouponRes, resCouponCount } = Object.entries(
+        resCouponData,
+      ).reduce(
+        (accumulator, [resId, reservation]) => {
+          const isExpired = reservation.expiresAt.toMillis() < now.toMillis();
+          if (!isExpired) {
+            accumulator.validCouponRes[resId] = reservation;
+            accumulator.resCouponCount += 1;
+          }
+
+          return accumulator;
+        },
+        { validCouponRes: {}, resCouponCount: 0 },
+      );
+
       // Check usage limit (only if limit exists)
       if (couponData.usageLimit != null) {
-        const used = (couponData.usedCount || 0) + reservedCouponCount;
+        const used = (couponData.usedCount || 0) + resCouponCount;
 
         if (used >= couponData.usageLimit) {
           throw new functions.https.HttpsError(
@@ -887,41 +890,53 @@ exports.createOrder = functions.https.onCall(async (data, context) => {
       }
 
       // Calculate Discount
-      if (couponData.type === "PERCENT") {
-        discountAmount = (subTotal * couponData.value) / 100;
-      } else {
-        discountAmount = couponData.value;
-      }
+      const couponAmount =
+        couponData.type === "PERCENT"
+          ? (subTotal * couponData.value) / 100
+          : couponData.value;
 
-      discountAmount = Math.min(discountAmount, subTotal);
+      // Ensure we don't discount more than the subtotal itself
+      discountAmount = Math.min(couponAmount, subTotal);
 
-      // Branch Coupon Write
+      // Write Coupon Data
       if (paymentMethod === "COD") {
         // Increment usage immediately
         tx.update(couponSnap.ref, {
           usedCount: FieldValue.increment(1),
           [`usedBy.${uid}`]: true,
         });
-        tx.set(reservedCouponSnap.ref, reservedCouponData);
+        tx.set(resCouponRef, validCouponRes);
       } else {
         // Reserve for Online Payment
-        reservedCouponData[orderId] = {
-          uid: uid,
+        validCouponRes[orderId] = {
+          uid,
           reservedAt: now,
+          expiresAt: Timestamp.fromMillis(now.toMillis() + EXPIRY_TIME),
         };
-        tx.set(reservedCouponSnap.ref, reservedCouponData);
+        tx.set(resCouponRef, validCouponRes);
       }
     }
 
     const finalAmount = subTotal - discountAmount;
 
-    // Apply all writes safely within the transaction
-    for (const write of productWrites) {
-      tx.update(write.ref, write.data);
-    }
-    for (const write of reservedWrites) {
-      tx.set(write.ref, write.data);
-    }
+    // Write product & stock data
+    processedProducts.forEach((p) => {
+      if (paymentMethod === "COD") {
+        // Deduct actual stock immediately, update cleaned reservations
+        tx.update(p.productRef, { stock: p.actualStock - p.qty });
+        tx.set(p.resProductRef, p.validProdRes);
+      } else {
+        // Add the new reservation
+        p.validProdRes[orderId] = {
+          uid,
+          quantity: p.qty,
+          reservedAt: now,
+          expiresAt: Timestamp.fromMillis(now.toMillis() + EXPIRY_TIME),
+        };
+
+        tx.set(p.resProductRef, p.validProdRes);
+      }
+    });
 
     // Create the final order document
     const initialStatus =
@@ -942,10 +957,11 @@ exports.createOrder = functions.https.onCall(async (data, context) => {
   });
 
   // STRIPE Checkout session
-
   if (paymentMethod === "ONLINE") {
     try {
-      // 2. Create the PaymentIntent
+      const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+
+      //  Create the PaymentIntent
       const paymentIntent = await stripe.paymentIntents.create({
         amount: Math.round(transactionResult.finalAmount * 100), // Convert INR to Paise
         currency: "inr",
@@ -956,7 +972,7 @@ exports.createOrder = functions.https.onCall(async (data, context) => {
         },
       });
 
-      // 3. Return the client_secret to the frontend!
+      // Return the client_secret to the frontend!
       return {
         orderId: transactionResult.orderId,
         status: transactionResult.status,
@@ -978,10 +994,175 @@ exports.createOrder = functions.https.onCall(async (data, context) => {
   }
 });
 
+exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
+  const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+
+  // Verify the webhook is from stripe
+  let event;
+  try {
+    const signature = req.headers["stripe-signature"];
+    const secret = process.env.STRIPE_WEBHOOK_SECRET;
+    event = stripe.webhooks.constructEvent(req.rawBody, signature, secret);
+  } catch (err) {
+    console.error("Verification failed: ", err.message);
+    return res.status(400).send("Webhook Error: Invalid Signature");
+  }
+
+  // Extract order details
+  const paymentIntent = event.data.object;
+  const orderId = paymentIntent.metadata?.orderId;
+  const uid = paymentIntent.metadata?.uid;
+
+  // If there is no order ID, this payment isn't related to our store.
+  if (!orderId) {
+    return res.status(200).send("No order ID found");
+  }
+
+  const orderRef = db.collection("orders").doc(orderId);
+
+  try {
+    await db.runTransaction(async (tx) => {
+      const orderSnap = await tx.get(orderRef);
+      if (!orderSnap.exists) return;
+
+      const order = orderSnap.data();
+
+      if (order.status !== "PENDING_PAYMENT" && order.status !== "FAILED")
+        return;
+
+      // On success
+      if (event.type === "payment_intent.succeeded") {
+        // Mark order paid
+        tx.update(orderRef, { status: "PROCESSING" });
+
+        // Process each item in the order
+        for (const item of order.items) {
+          const productRef = db.collection("products").doc(item.id);
+          const resProductRef = db.collection("reservedProducts").doc(item.id);
+
+          // Permanently deduct the stock
+          tx.update(productRef, {
+            stock: FieldValue.increment(-item.quantity),
+          });
+
+          // Delete the reserved data
+          tx.update(resProductRef, {
+            [orderId]: FieldValue.delete(),
+          });
+        }
+
+        const coupon = order.couponCode || null;
+
+        if (coupon) {
+          const couponRef = db.collection("coupons").doc(coupon);
+          const resCouponRef = db.collection("reservedCoupons").doc(coupon);
+
+          // Tally up the coupon usage and log the user ID
+          tx.update(couponRef, {
+            usedCount: FieldValue.increment(1),
+            [`usedBy.${uid}`]: true,
+          });
+
+          // Remove the temporary hold on coupon
+          tx.update(resCouponRef, {
+            [orderId]: FieldValue.delete(),
+          });
+
+          console.log(`Order ${orderId} success!`);
+        }
+      }
+
+      // On Failure
+      if (
+        event.type === "payment_intent.payment_failed" ||
+        event.type === "payment_intent.canceled"
+      ) {
+        // Mark the order as failed
+        tx.update(orderRef, { status: "FAILED" });
+
+        // Release the temporary hold
+        for (const item of order.items) {
+          const resProductRef = db.collection("reservedProducts").doc(item.id);
+
+          tx.update(resProductRef, {
+            [orderId]: FieldValue.delete(),
+          });
+        }
+
+        const coupon = order.couponCode || null;
+
+        if (coupon) {
+          const couponRef = db.collection("coupons").doc(coupon);
+          const resCouponRef = db.collection("reservedCoupons").doc(coupon);
+
+          tx.update(resCouponRef, {
+            [orderId]: FieldValue.delete(),
+          });
+        }
+
+        console.log(`Order ${orderId} failed.`);
+      }
+    });
+
+    res.json({ received: true });
+  } catch (err) {
+    console.error("Error while processing order: ", err.message);
+    res.status(500).send("Internal Server Error");
+  }
+});
+
+exports.syncProducts = functions.firestore
+  .document("products/{id}")
+  .onWrite(async (change, context) => {
+    const client = algoliasearch(
+      process.env.ALGOLIA_APP_ID,
+      process.env.ALGOLIA_WRITE_API_KEY
+    );
+
+    const productId = context.params.id;
+    const indexName = process.env.ALGOLIA_INDEX; 
+
+    // DELETE SCENARIO
+    if (!change.after.exists) {
+      await client.deleteObject({
+        indexName: indexName,
+        objectID: productId,
+      });
+      console.log(`Deleted ${productId} from Algolia`);
+      return;
+    }
+
+    // === THE GUARD CLAUSE ===
+    // If this is an UPDATE (both before and after exist), check if the data actually changed.
+    if (change.before.exists && change.after.exists) {
+      const beforeData = change.before.data();
+      const afterData = change.after.data();
+
+      // Convert to strings to quickly compare if the objects are identical
+      if (JSON.stringify(beforeData) === JSON.stringify(afterData)) {
+        console.log(`No changes detected for ${productId}. Skipping Algolia sync.`);
+        return; // Exit the function early!
+      }
+    }
+
+    // CREATE / UPDATE SCENARIO
+    const data = change.after.data();
+
+    await client.saveObject({
+      indexName: indexName,
+      body: {
+        objectID: productId,
+        ...data,
+      },
+    });
+    console.log(`Saved ${productId} to Algolia`);
+  });
+
+  
 // Testing
 exports.seedTestProducts = functions.https.onCall(async (data, context) => {
   try {
-    const { count = 20 } = data;
+    const { count = 5 } = data;
 
     const categories = ["electronics", "clothing", "mobiles"];
     const brands = ["Sony", "Nike", "Apple", "Samsung", "Adidas"];

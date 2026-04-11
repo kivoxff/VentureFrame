@@ -1,14 +1,29 @@
 import { httpsCallable } from "firebase/functions";
+import { useState } from "react";
 import { functions } from "../firebase/config";
 
-function test() {
+function Test() {
+  const [loading, setLoading] = useState(false);
+
   const func1 = async () => {
-    const seedProducts = httpsCallable(functions, "seedTestProducts");
-    await seedProducts({ count: 50 });
+    if (loading) return; // prevent multiple calls
+    setLoading(true);
+
+    try {
+      const seedProducts = httpsCallable(functions, "seedTestProducts");
+      await seedProducts({ count: 5 });
+    } catch (err) {
+      console.error(err);
+    }
+
+    setLoading(false);
   };
 
-  return <button onClick={func1}>seed products</button>;
+  return (
+    <button onClick={func1} disabled={loading}>
+      {loading ? "Seeding..." : "Seed products"}
+    </button>
+  );
 }
 
-
-export default test;
+export default Test;

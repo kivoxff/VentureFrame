@@ -1,4 +1,4 @@
-const ProductItemCard = ({ product, actionButton, onQtyChange }) => {
+const CartItemCard = ({ product, actionButton, onQtyChange }) => {
   const {
     id,
     name,
@@ -81,4 +81,4 @@ const ProductItemCard = ({ product, actionButton, onQtyChange }) => {
   );
 };
 
-export default ProductItemCard;
+export default CartItemCard;
