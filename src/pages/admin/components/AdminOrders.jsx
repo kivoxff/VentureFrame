@@ -2,7 +2,7 @@ import OrdersManager from "../../../components/orders/OrdersManager";
 
 const AdminOrders = () => {
     return (
-        <OrdersManager />
+        <OrdersManager source={"admin"} />
     )
 };
 

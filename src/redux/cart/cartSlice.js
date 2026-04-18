@@ -39,6 +39,7 @@ const cartSlice = createSlice({
 
       if (item.outOfStock) {
         item.qty = 0;
+        toast.error("Out Of Stock");
       } else {
         const availableStock = item.count || 0;
         item.qty = Math.max(1, Math.min(qty, availableStock));

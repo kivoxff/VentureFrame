@@ -1,15 +1,32 @@
-import addToCart from "../../../assets/icons/addToCart.svg";
+import { useDispatch } from "react-redux";
+import cartIcon from "../../../assets/icons/addToCart.svg";
+import { useAuth } from "../../../context/AuthContext";
+import { addToCart } from "../../../redux/cart/cartSlice";
 
 const ListCard = ({ product }) => {
+
+const { user } = useAuth();
+const dispatch = useDispatch();
+
+const handleAddToCart = (e) => {
+  e.preventDefault(); // prevent link navigation
+  e.stopPropagation();
+
+  dispatch(addToCart({uid: user?.userId, item: product}));
+};
+
+
   const isSale = product.salePrice && product.mrp > product.salePrice;
   return (
     <div className="px-2 mb-4 flex shrink-0 min-w-44 w-1/2 sm:w-1/3 lg:w-1/4">
       {/* Actual Card Body */}
       <div className="group flex flex-col w-full bg-white rounded-2xl md:rounded-3xl p-2 md:p-3 border border-gray-100 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 relative">
         {/* Top Left: Circular Add to Cart Button */}
-        <button className="absolute top-4 left-4 md:top-6 md:left-6 z-20 flex items-center justify-center w-8 h-8 md:w-11 md:h-11 bg-white/90 backdrop-blur-sm text-gray-900 rounded-full shadow-sm border border-transparent hover:bg-violet-600 hover:border-violet-600 hover:text-white transition-all duration-300 group/btn">
+        <button 
+        onClick={handleAddToCart}
+        className="absolute top-4 left-4 md:top-6 md:left-6 z-20 flex items-center justify-center w-8 h-8 md:w-11 md:h-11 bg-white/90 backdrop-blur-sm text-gray-900 rounded-full shadow-sm border border-transparent hover:bg-violet-600 hover:border-violet-600 hover:text-white transition-all duration-300 group/btn">
           <img
-            src={addToCart}
+            src={cartIcon}
             alt="Add to Cart"
             className="w-4 h-4 md:w-5 md:h-5 transition-all duration-300 group-hover/btn:invert group-hover/btn:brightness-0"
           />

@@ -22,9 +22,9 @@ import SellerProducts from "./pages/seller/components/SellerProducts";
 import SellerApply from "./pages/seller/components/SellerApply";
 import UserProfile from "./pages/profile/UserProfile";
 import SellerProfile from "./pages/profile/SellerProfile";
+import SeedProducts from "./pages/SeedProducts";
 
 function App() {
-
   return (
     <Routes>
       <Route path="/" element={<Home />} />
@@ -33,11 +33,11 @@ function App() {
       <Route path="/cart" element={<Cart />} />
       <Route path="/payment" element={<Payment />} />
       <Route path="/checkout" element={<Checkout />} />
-      <Route path="/orders" element={<Orders />} />
-      <Route path="/order-details" element={<OrderDetails />} />
+      <Route path="/orders/:uid" element={<Orders />} />
+      <Route path="/order-details/:oid" element={<OrderDetails />} />
       <Route path="/seller-apply" element={<SellerApply />} />
 
-      <Route path="/admin-dashboard" element={<Admin />} >
+      <Route path="/admin-dashboard" element={<Admin />}>
         <Route index element={<AdminDashboard />} />
         <Route path="orders" element={<AdminOrders />} />
         <Route path="products" element={<AdminProducts />} />
@@ -54,8 +54,9 @@ function App() {
       <Route path="/profile/user/:uid" element={<UserProfile />} />
       <Route path="/profile/seller/:sid" element={<SellerProfile />} />
       <Route path="/test" element={<Test />} />
+      <Route path="/seed" element={<SeedProducts />} />
     </Routes>
-  )
+  );
 }
 
-export default App
+export default App;

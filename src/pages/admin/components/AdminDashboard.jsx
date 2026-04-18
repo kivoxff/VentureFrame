@@ -45,7 +45,6 @@ function AdminDashboard() {
     },
   ];
 
-
   const monthlyRevenue = [
     { month: "Jan", revenue: 12000 },
     { month: "Feb", revenue: 15000 },

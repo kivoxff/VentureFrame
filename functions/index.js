@@ -707,7 +707,7 @@ exports.validateCoupon = functions.https.onCall(async (data, context) => {
 exports.createOrder = functions.https.onCall(async (data, context) => {
   // INPUT VALIDATION & SETUP
   const uid = context.auth.uid;
-  const { products, paymentMethod = "ONLINE", couponCode } = data; // Expect "COD" or "ONLINE"
+  const { products, paymentMethod = "ONLINE", couponCode, address } = data; // Expect "COD" or "ONLINE"
 
   if (!products || !products.length) {
     throw new functions.https.HttpsError(
@@ -795,11 +795,13 @@ exports.createOrder = functions.https.onCall(async (data, context) => {
         );
       }
 
-      const { title: name, price } = productData;
+      const { title: name, images, price, sellerId } = productData;
 
       return {
         id,
         name,
+        sellerId,
+        images,
         price,
         qty,
         actualStock,
@@ -810,8 +812,10 @@ exports.createOrder = functions.https.onCall(async (data, context) => {
     });
 
     const orderItems = processedProducts.map((p) => ({
-      id: p.id,
-      name: p.name,
+      productId: p.id,
+      title: p.name,
+      storeId: p.sellerId,
+      image: p.images[0].url,
       quantity: p.qty,
       price: p.price,
     }));
@@ -918,6 +922,7 @@ exports.createOrder = functions.https.onCall(async (data, context) => {
     }
 
     const finalAmount = subTotal - discountAmount;
+    const commission = (finalAmount * 10) / 100;
 
     // Write product & stock data
     processedProducts.forEach((p) => {
@@ -939,17 +944,37 @@ exports.createOrder = functions.https.onCall(async (data, context) => {
     });
 
     // Create the final order document
-    const initialStatus =
-      paymentMethod === "COD" ? "PROCESSING" : "PENDING_PAYMENT";
+
+    const initialStatus = paymentMethod === "COD" ? "PLACED" : "PENDING";
+
+    const { firstName, lastName, email, street, city, pinCode } = address;
 
     tx.set(orderRef, {
       userId: uid,
+      orderId,
+
+      customerName: `${firstName} ${lastName}`,
+      email,
+
+      address: {
+        firstName,
+        lastName,
+        email,
+        street,
+        city,
+        pinCode,
+      },
+
       items: orderItems,
       paymentMethod: paymentMethod,
-      status: initialStatus,
+      orderStatus: initialStatus, // pending || completed || cancelled || placed
+      paymentStatus: "PENDING", // pending || paid || collected
+      deliveryStatus: "PENDING", // pending || shipped || delivered
+      currentStatus: "PENDING", // avg of all three status
       couponCode: couponCode || null,
       discountAmount,
       totalAmount: finalAmount,
+      platformCommission: commission,
       createdAt: FieldValue.serverTimestamp(),
     });
 
@@ -1033,12 +1058,15 @@ exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
       // On success
       if (event.type === "payment_intent.succeeded") {
         // Mark order paid
-        tx.update(orderRef, { status: "PROCESSING" });
+        tx.update(orderRef, {
+          paymentStatus: "PAID",
+          orderStatus: "PLACED",
+        });
 
         // Process each item in the order
         for (const item of order.items) {
-          const productRef = db.collection("products").doc(item.id);
-          const resProductRef = db.collection("reservedProducts").doc(item.id);
+          const productRef = db.collection("products").doc(item.productId);
+          const resProductRef = db.collection("reservedProducts").doc(item.productId);
 
           // Permanently deduct the stock
           tx.update(productRef, {
@@ -1082,7 +1110,7 @@ exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
 
         // Release the temporary hold
         for (const item of order.items) {
-          const resProductRef = db.collection("reservedProducts").doc(item.id);
+          const resProductRef = db.collection("reservedProducts").doc(item.productId);
 
           tx.update(resProductRef, {
             [orderId]: FieldValue.delete(),
@@ -1111,54 +1139,226 @@ exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
   }
 });
 
-exports.syncProducts = functions.firestore
-  .document("products/{id}")
-  .onWrite(async (change, context) => {
-    const client = algoliasearch(
-      process.env.ALGOLIA_APP_ID,
-      process.env.ALGOLIA_WRITE_API_KEY
+// exports.syncProducts = functions.firestore
+//   .document("products/{id}")
+//   .onWrite(async (change, context) => {
+//     const client = algoliasearch(
+//       process.env.ALGOLIA_APP_ID,
+//       process.env.ALGOLIA_WRITE_API_KEY
+//     );
+
+//     const productId = context.params.id;
+//     const indexName = process.env.ALGOLIA_INDEX;
+
+//     // DELETE SCENARIO
+//     if (!change.after.exists) {
+//       await client.deleteObject({
+//         indexName: indexName,
+//         objectID: productId,
+//       });
+//       console.log(`Deleted ${productId} from Algolia`);
+//       return;
+//     }
+
+//     // === THE GUARD CLAUSE ===
+//     // If this is an UPDATE (both before and after exist), check if the data actually changed.
+//     if (change.before.exists && change.after.exists) {
+//       const beforeData = change.before.data();
+//       const afterData = change.after.data();
+
+//       // Convert to strings to quickly compare if the objects are identical
+//       if (JSON.stringify(beforeData) === JSON.stringify(afterData)) {
+//         console.log(`No changes detected for ${productId}. Skipping Algolia sync.`);
+//         return; // Exit the function early!
+//       }
+//     }
+
+//     // CREATE / UPDATE SCENARIO
+//     const data = change.after.data();
+
+//     await client.saveObject({
+//       indexName: indexName,
+//       body: {
+//         objectID: productId,
+//         ...data,
+//       },
+//     });
+//     console.log(`Saved ${productId} to Algolia`);
+//   });
+
+exports.updateOrder = functions.https.onCall(async (data, context) => {
+  const { orderId, action } = data;
+
+  if (!["SHIPPED", "DELIVERED", "CANCELLED"].includes(action)) {
+    throw new functions.https.HttpsError("invalid-argument", "Invalid action");
+  }
+
+  const orderRef = db.collection("orders").doc(orderId);
+  const orderSnap = await orderRef.get();
+  const orderData = orderSnap.data();
+
+  const orderUpdates = {}; // store all order updates
+
+  if (!orderSnap.exists) {
+    throw new functions.https.HttpsError("invalid-argument", "Order not found");
+  }
+
+  const batch = db.batch(); // atomic batch
+
+  // order shipped
+  if (action === "SHIPPED") {
+    orderUpdates.deliveryStatus = "SHIPPED";
+    orderUpdates.currentStatus = "SHIPPED";
+  }
+
+  // order delivered
+  if (action === "DELIVERED") {
+    orderUpdates.deliveryStatus = "DELIVERED";
+    orderUpdates.orderStatus = "COMPLETED";
+    orderUpdates.currentStatus = "DELIVERED";
+
+    if (orderData.paymentMethod === "COD") {
+      orderUpdates.paymentStatus = "COLLECTED";
+    }
+  }
+
+  // order cancelled
+  if (action === "CANCELLED") {
+    orderUpdates.orderStatus = "CANCELLED";
+    orderUpdates.currentStatus = "CANCELLED";
+  }
+
+  batch.update(orderRef, orderUpdates);
+
+  try {
+    await batch.commit();
+  } catch (err) {
+    console.error(err.message);
+  }
+});
+
+exports.syncStats = functions.firestore
+  .document("orders/{orderId}")
+  .onUpdate(async (change, context) => {
+    const beforeData = change.before.data();
+    const afterData = change.after.data();
+
+    const preStatus = beforeData.orderStatus;
+    const currStatus = afterData.orderStatus;
+
+    const isCompleted = preStatus !== "COMPLETED" && currStatus === "COMPLETED";
+    const isCancelled = preStatus === "COMPLETED" && currStatus === "CANCELLED"; // rare but possible i.e. cancelled after order complition
+
+    if (!isCompleted && !isCancelled) return null;
+
+    const factor = isCompleted ? 1 : -1;
+    const monthKey = new Date().toISOString().slice(0, 7);
+
+    const batch = db.batch();
+
+    const platformOverviewRef = db.doc("platformStates/overview");
+    const platformMonthlyRef = db.doc("platformStates/monthly");
+
+    // PLATFORM OVERVIEW
+    batch.set(
+      platformOverviewRef,
+      {
+        totalRevenue: FieldValue.increment(factor * afterData.totalAmount),
+        totalCommission: FieldValue.increment(
+          factor * afterData.platformCommission,
+        ),
+        totalOrders: FieldValue.increment(factor * 1),
+      },
+      { merge: true },
     );
 
-    const productId = context.params.id;
-    const indexName = process.env.ALGOLIA_INDEX; 
-
-    // DELETE SCENARIO
-    if (!change.after.exists) {
-      await client.deleteObject({
-        indexName: indexName,
-        objectID: productId,
-      });
-      console.log(`Deleted ${productId} from Algolia`);
-      return;
-    }
-
-    // === THE GUARD CLAUSE ===
-    // If this is an UPDATE (both before and after exist), check if the data actually changed.
-    if (change.before.exists && change.after.exists) {
-      const beforeData = change.before.data();
-      const afterData = change.after.data();
-
-      // Convert to strings to quickly compare if the objects are identical
-      if (JSON.stringify(beforeData) === JSON.stringify(afterData)) {
-        console.log(`No changes detected for ${productId}. Skipping Algolia sync.`);
-        return; // Exit the function early!
-      }
-    }
-
-    // CREATE / UPDATE SCENARIO
-    const data = change.after.data();
-
-    await client.saveObject({
-      indexName: indexName,
-      body: {
-        objectID: productId,
-        ...data,
+    // PLATFORM MONTHLY
+    batch.set(
+      platformMonthlyRef,
+      {
+        [monthKey]: {
+          revenue: FieldValue.increment(factor * afterData.totalAmount),
+          orders: FieldValue.increment(factor * 1),
+        },
       },
+      { merge: true },
+    );
+
+    // GROUP ITEMS BY STORE
+    const storeMap = {};
+    afterData.items.forEach((item) => {
+      const { storeId, price, quantity } = item;
+
+      if (!storeMap[storeId]) {
+        storeMap[storeId] = {
+          revenue: 0,
+          qty: 0,
+          items: [],
+        };
+      }
+
+      storeMap[storeId].revenue += price * quantity;
+      storeMap[storeId].qty += quantity;
+      storeMap[storeId].items.push(item);
     });
-    console.log(`Saved ${productId} to Algolia`);
+
+    // STORE STATS
+    for (const storeId in storeMap) {
+      const storeData = storeMap[storeId];
+
+      const storeOverviewRef = db.doc(`stores/${storeId}/stats/overview`);
+      const storeMonthlyRef = db.doc(`stores/${storeId}/stats/monthly`);
+      const productRef = db.doc(`stores/${storeId}/stats/products`);
+
+      // store overview
+      batch.set(
+        storeOverviewRef,
+        {
+          totalRevenue: FieldValue.increment(factor * storeData.revenue),
+          totalOrders: FieldValue.increment(factor * 1),
+          productsSold: FieldValue.increment(factor * storeData.qty),
+        },
+        { merge: true },
+      );
+
+      // store monthly
+      batch.set(
+        storeMonthlyRef,
+        {
+          [monthKey]: {
+            revenue: FieldValue.increment(factor * storeData.revenue),
+            orders: FieldValue.increment(factor * 1),
+          },
+        },
+        { merge: true },
+      );
+
+      // Products States
+      storeData.items.forEach((item) => {
+        const { productId, title, quantity, price } = item;
+
+        batch.set(
+          productRef,
+          {
+            [productId]: {
+              title,
+              sales: FieldValue.increment(factor * quantity),
+              revenue: FieldValue.increment(factor * (price * quantity)),
+            },
+          },
+          { merge: true },
+        );
+      });
+    }
+
+    try {
+      await batch.commit();
+      return null;
+    } catch (err) {
+      console.error(err.message);
+    }
   });
 
-  
 // Testing
 exports.seedTestProducts = functions.https.onCall(async (data, context) => {
   try {
@@ -1173,6 +1373,15 @@ exports.seedTestProducts = functions.https.onCall(async (data, context) => {
       "Limited Edition",
     ];
 
+    // 👇 Add mock seller IDs here
+    const sellerIds = [
+      "seller_101",
+      "seller_102",
+      "seller_103",
+      "seller_104",
+      "seller_105",
+    ];
+
     const batch = db.batch();
 
     for (let i = 0; i < count; i++) {
@@ -1184,13 +1393,16 @@ exports.seedTestProducts = functions.https.onCall(async (data, context) => {
       const stock = Math.floor(Math.random() * 50);
 
       const priceWithDiscount = Math.ceil(
-        originalPrice - (originalPrice * discount) / 100,
+        originalPrice - (originalPrice * discount) / 100
       );
+
+      const randomSellerId =
+        sellerIds[Math.floor(Math.random() * sellerIds.length)];
 
       const productData = {
         productId,
         createdBy: "ventureFrame",
-        sellerId: "ventureframe",
+        sellerId: randomSellerId, // 👈 now dynamic
         storeName: "VentureFrame",
         stockStatus: stock > 0 ? "In Stock" : "Out of Stock",
         price: priceWithDiscount,

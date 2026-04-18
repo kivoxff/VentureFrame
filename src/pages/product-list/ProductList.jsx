@@ -88,7 +88,7 @@ function ProductList() {
         // Send TWO requests in one call
         const response = await searchClient.search({
           requests: [
-            // 1. The Product Request (Has filters)
+            // The Product Request (Has filters)
             {
               indexName: INDEX_NAME,
               query: searchQuery,
@@ -96,11 +96,11 @@ function ProductList() {
               page: page,
               hitsPerPage: 2,
             },
-            // 2. The Facet Request (NO filters, just gets the full list of options)
+            // The Facet Request (NO filters, just gets the full list of options)
             {
               indexName: INDEX_NAME,
-              query: searchQuery, // Keep the text search so it's relevant
-              facets: ["category", "brand", "price", "stockStatus"],
+              query: searchQuery,
+              facets: ["category", "brand", "price"], // stockStatus can also be added
               hitsPerPage: 0, // We only want the facets here, no products!
             },
           ],

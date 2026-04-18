@@ -14,24 +14,6 @@ import { useDispatch, useSelector } from "react-redux";
 import { fetchCartThunk } from "../../redux/cart/cartThunk";
 
 function Navbar() {
-  const data = [
-    { name: "T-Shirt", img: sellerIcon },
-    { name: "Casual Shirt", img: sellerIcon },
-    { name: "Formal Shirt", img: sellerIcon },
-    { name: "Jeans", img: sellerIcon },
-    { name: "Denim Jacket", img: sellerIcon },
-    { name: "Hoodie", img: sellerIcon },
-    { name: "Sweatshirt", img: sellerIcon },
-    { name: "Track Pants", img: sellerIcon },
-    { name: "Shorts", img: sellerIcon },
-    { name: "Leather Jacket", img: sellerIcon },
-    { name: "Blazer", img: sellerIcon },
-    { name: "Kurta", img: sellerIcon },
-    { name: "Pyjama", img: sellerIcon },
-    { name: "Cargo Pants", img: sellerIcon },
-    { name: "Joggers", img: sellerIcon },
-  ];
-
   const [searchVal, setSearchVal] = useState("");
   const [showSearch, setShowSearch] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
@@ -89,6 +71,11 @@ function Navbar() {
     }
   };
 
+  const handleSelect = (product) => {
+    const {id} = product;
+    navigate(`/product-details/${id}`);
+  }
+
   return (
     <nav className="px-1 w-full h-16 flex justify-around items-center shadow-md border">
       {/* Logo */}
@@ -119,7 +106,7 @@ function Navbar() {
           />
 
           {/* Dropdown Suggestions */}
-          {searchVal && <SearchDropdown data={data} searchVal={searchVal} />}
+          {searchVal && <SearchDropdown searchVal={searchVal} onSelect={handleSelect} />}
         </div>
       )}
 
@@ -143,7 +130,7 @@ function Navbar() {
             />
 
             {/* Dropdown Suggestions */}
-            {searchVal && <SearchDropdown data={data} searchVal={searchVal} />}
+            {searchVal && <SearchDropdown searchVal={searchVal} onSelect={handleSelect} />}
           </div>
 
           {/* Mobile Search Button */}

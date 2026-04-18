@@ -4,7 +4,7 @@ import filterIcon from "../../../assets/icons/filter.svg";
 
 const FilterStrip = ({ facets = {}, facetStats = {} }) => {
   const dynamicFilters = Object.entries(facets)
-    .filter(([key]) => key !== "price" && key !=="stockStatus")
+    .filter(([key]) => key !== "price" && key !== "stockStatus") // skip price and stockStatus
     .map(([key, counts]) => ({
       name: key,
       options: Object.keys(counts).sort((a, b) => b.localeCompare(a)),
@@ -23,35 +23,35 @@ const FilterStrip = ({ facets = {}, facetStats = {} }) => {
   const maxAllowedPrice = facetStats?.price?.max || 1000;
 
   /// Helper function to round numbers to cleaner values (nearest 100)
-const round = (num) => Math.round(num / 100) * 100;
+  const round = (num) => Math.round(num / 100) * 100;
 
-// 1. Calculate total price range
-const range = maxAllowedPrice - minAllowedPrice;
+  // 1. Calculate total price range
+  const range = maxAllowedPrice - minAllowedPrice;
 
-// 2. Divide the range into 3 equal parts
-const step = Math.ceil(range / 3);
+  // 2. Divide the range into 3 equal parts
+  const step = Math.ceil(range / 3);
 
-// 3. Generate price presets using rounded values
-const pricePresets = [
-  {
-    // First bucket → lowest prices
-    label: `Under ₹${round(minAllowedPrice + step)}`,
-    min: round(minAllowedPrice),
-    max: round(minAllowedPrice + step),
-  },
-  {
-    // Middle bucket → mid-range prices
-    label: `₹${round(minAllowedPrice + step)} - ₹${round(minAllowedPrice + step * 2)}`,
-    min: round(minAllowedPrice + step),
-    max: round(minAllowedPrice + step * 2),
-  },
-  {
-    // Last bucket → highest prices
-    label: `Over ₹${round(minAllowedPrice + step * 2)}`,
-    min: round(minAllowedPrice + step * 2),
-    max: round(maxAllowedPrice),
-  },
-];
+  // 3. Generate price presets using rounded values
+  const pricePresets = [
+    {
+      // First bucket → lowest prices
+      label: `Under ₹${round(minAllowedPrice + step)}`,
+      min: round(minAllowedPrice),
+      max: round(minAllowedPrice + step),
+    },
+    {
+      // Middle bucket → mid-range prices
+      label: `₹${round(minAllowedPrice + step)} - ₹${round(minAllowedPrice + step * 2)}`,
+      min: round(minAllowedPrice + step),
+      max: round(minAllowedPrice + step * 2),
+    },
+    {
+      // Last bucket → highest prices
+      label: `Over ₹${round(minAllowedPrice + step * 2)}`,
+      min: round(minAllowedPrice + step * 2),
+      max: round(maxAllowedPrice),
+    },
+  ];
 
   // --- URL State Management ---
   const [searchParams, setSearchParams] = useSearchParams();
@@ -149,7 +149,7 @@ const pricePresets = [
   };
 
   return (
-    <div className="w-full flex flex-col font-sans shadow-sm bg-white sticky top-0 z-50">
+    <div className="w-full flex flex-col font-sans shadow-sm bg-white sticky top-0 z-10">
       {/* --- 1. MAIN SCROLLABLE STRIP --- */}
       <section className="relative flex items-center w-full px-4 py-3 border-b border-gray-100 overflow-hidden">
         {/* Filter Icon Base */}
@@ -176,7 +176,8 @@ const pricePresets = [
                     : "bg-white border-gray-200 text-gray-700 hover:border-violet-300 hover:bg-violet-50 hover:text-violet-700"
                 }`}
               >
-                {filter.name.charAt(0).toLocaleUpperCase() + filter.name.slice(1)}
+                {filter.name.charAt(0).toLocaleUpperCase() +
+                  filter.name.slice(1)}
               </button>
             );
           })}

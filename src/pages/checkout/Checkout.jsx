@@ -31,10 +31,6 @@ const Checkout = () => {
     }
   };
 
-  if (step === "success") {
-    return <OrderSuccess />;
-  }
-
   return (
     <section className="max-w-7xl mx-auto p-4 flex flex-col gap-6">
       <StepIndicator steps={steps} currentStep={getCurrentStep()} />
@@ -46,14 +42,16 @@ const Checkout = () => {
 
           {step === "payment" && method !== "COD" && <Payment />}
 
-          {/* {step === "success" && <OrderSuccess />} */}
+          {step === "success" && <OrderSuccess />}
         </div>
 
         {/* RIGHT */}
-        <div className="w-full lg:w-87.5 flex flex-col gap-3">
-          <OrderSummary products={items} discount={discount} />
-          <CouponBox products={items} />
-        </div>
+        {!(step === "success") && (
+          <div className="w-full lg:w-87.5 flex flex-col gap-3">
+            <OrderSummary products={items} discount={discount} />
+            <CouponBox products={items} />
+          </div>
+        )}
       </div>
     </section>
   );
