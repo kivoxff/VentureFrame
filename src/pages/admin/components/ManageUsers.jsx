@@ -1,77 +1,104 @@
-import { useEffect, useState } from "react";
-import ResourceTable from "../../../components/tables/ResourceTable";
-import { collection, doc, onSnapshot } from "firebase/firestore";
-import { db } from "../../../firebase/config";
 import { useNavigate } from "react-router-dom";
+import ResourceTable from "../../../components/tables/ResourceTable";
+import { functions } from "../../../firebase/config";
+import { toast } from "react-toastify";
+import { httpsCallable } from "firebase/functions";
 
-const ManageUsers = () => {
-  const [users, setUsers] = useState([]);
+function ManageUsers({ source }) {
   const navigate = useNavigate();
 
-  useEffect(() => {
-    const usersRef = collection(db, "users");
-    const unsubscribeSnap = onSnapshot(usersRef, (snap) => {
-      if (!snap.empty) {
-        const usersData = snap.docs.map((doc) => {
-          const data = doc.data();
-
-          return {
-            id: data.userId,
-            name: data.displayName,
-            email: data.email,
-            role: data.roles.includes("admin")
-              ? "Admin"
-              : data.roles.includes("seller")
-                ? "Seller"
-                : "Customer",
-            status: data.userStatus,
-            joinedDate: data.createdAt?.toDate()?.toLocaleDateString("en-IN"),
-          };
-        });
-
-        console.log(usersData);
-        setUsers(usersData);
-      }
-    });
-
-    return () => unsubscribeSnap();
-  }, []);
-
   const headers = [
-    { label: "User ID", key: "id" },
-    { label: "Name", key: "name" },
-    { label: "Email", key: "email" },
-    { label: "Status", key: "status" },
-    { label: "Role", key: "role" },
-    { label: "Joined Date", key: "joinedDate" },
-    { label: "Actions", key: "actions" },
+    { key: "userId", label: "User ID", sortable: false },
+    { key: "displayName", label: "Name", sortable: true },
+    { key: "email", label: "Email", sortable: true },
+    { key: "primaryRole", label: "Role", sortable: true },
+    { key: "userStatus", label: "Status", sortable: true },
+    // { key: "joinedDate", label: "Joined Date", sortable: true },
+    { key: "actions", label: "Actions", sortable: false },
   ];
 
-  const rowActions = [
-    {
-      label: "View",
-      func: (row) => navigate(`/profile/user/${row.id}`),
+  const customRenderers = {
+    userStatus: {
+      rendererType: "statusDropdown",
+      interactiveStatuses: ["ACTIVE", "BLOCKED"],
+      statuses: [
+        { label: "Active", value: "ACTIVE" },
+        { label: "Blocked", value: "BLOCKED" },
+      ],
+      onStatusChange: async (row, newStatus) => {
+        try {
+          const manageStatus = httpsCallable(functions, "manageUserStatus");
+
+          const result = await manageStatus({
+            userId: row.userId,
+            accountStatus: newStatus,
+          });
+
+          if (result.data?.success) {
+            toast.success(result.data.message);
+          }
+        } catch (error) {
+          console.error("Error updating user status:", error);
+        }
+      },
     },
+
+    primaryRole: {
+      rendererType: "statusDropdown",
+      interactiveStatuses: [],
+      statuses: [
+        {
+          value: "USER",
+          label: "Customer",
+        },
+        {
+          value: "SELLER",
+          label: "Vendor",
+        },
+        {
+          value: "ADMIN",
+          label: "Administrator",
+        },
+      ],
+    },
+
+    actions: {
+      rendererType: "actionButton",
+      actions: [
+        {
+          label: "View",
+          func: (row) => navigate(`/profile/user/${row.id}`),
+        },
+      ],
+    },
+  };
+
+  const filters = [
+    { label: "All", key: "ALL", value: "ALL" },
+    { label: "Active", key: "userStatus", value: "ACTIVE" },
+    { label: "Blocked", key: "userStatus", value: "BLOCKED" },
+    // { label: "Customer", key: "primaryRole", value: "user" },
+    // { label: "Seller", key: "primaryRole", value: "seller" },
+    // { label: "Admin", key: "primaryRole", value: "admin" },
+  ];
+
+  const searchFields = [
+    { label: "User ID", key: "userId" },
+    { label: "Name", key: "displayName" },
+    { label: "Email", key: "email" },
   ];
 
   return (
     <ResourceTable
-      data={users}
-      headers={headers}
-      rowActions={rowActions}
-      filterOptions={[
-        "All",
-        "Active",
-        "Blocked",
-        "Customer",
-        "Seller",
-        "Admin",
-      ]}
-      searchKeys={["id", "name"]}
       title={"Users"}
-      placeHolder={"Search by User ID or Name"}
+      collectionName="users"
+      source={source}
+      headers={headers}
+      customRenderers={customRenderers}
+      filters={filters}
+      searchFields={searchFields}
     />
   );
-};
+}
 
 export default ManageUsers;

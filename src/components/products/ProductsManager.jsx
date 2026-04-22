@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import ResourceTable from "../tables/ResourceTable";
 import ProductFormModal from "./ProductFormModal";
 import {
   collection,
@@ -9,79 +8,18 @@ import {
   updateDoc,
   where,
 } from "firebase/firestore";
-import {
-  getDownloadURL,
-  ref,
-  uploadBytes,
-} from "firebase/storage";
+import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import { db, functions, storage } from "../../firebase/config";
 import { httpsCallable } from "firebase/functions";
-import { useAuth } from "../../context/AuthContext";
 import confirmToast from "../../utils/confirmToast";
+import { useNavigate } from "react-router-dom";
+import ResourceTable from "../tables/ResourceTable";
 
 const ProductsManager = ({ source }) => {
-  const { user } = useAuth();
-  const [products, setProducts] = useState([]);
-
-  useEffect(() => {
-    // get products
-    // if (!user) return;
-    const productsRef = collection(db, "products");
-
-    const q =
-      source === "seller" && user?.sellerId
-        ? query(productsRef, where("sellerId", "==", user.sellerId))
-        : productsRef;
-
-    const unsubscribe = onSnapshot(q, (snap) => {
-      const productsData = snap.docs.map((doc) => {
-        const {
-          productId: id,
-          stockStatus: status,
-          storeName: seller,
-          ...data
-        } = doc.data();
-
-        return { id, status, seller, ...data };
-      });
-
-      setProducts(productsData);
-    });
-
-    return () => unsubscribe;
-  }, [source, user]);
-
-  const headers = [
-    { label: "Product ID", key: "id" },
-    { label: "Product Name", key: "title" },
-    { label: "Seller", key: "seller" },
-    { label: "Brand", key: "brand" },
-    { label: "Status", key: "status" },
-    { label: "Price", key: "price" },
-    { label: "Stock", key: "stock" },
-    { label: "Actions", key: "actions" },
-  ];
-
-  const rowActions = [
-    {
-      label: "Edit",
-      func: (row) => handleEditClick(row),
-    },
-
-    {
-      label: "Remove",
-      func: async (row) => {
-        const isConfirmed = await confirmToast(`Delete ${row.title}?`);
-
-        if (isConfirmed) {
-          await removeProduct({ productId: row.id, ProductImgs: row.images });
-        }
-      },
-    },
-  ];
-
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState(false);
+
+  const navigate = useNavigate();
 
   const getChangedFields = (original, updated) => {
     const changes = {};
@@ -116,7 +54,7 @@ const ProductsManager = ({ source }) => {
 
   const saveProduct = async (productData) => {
     if (editingProduct) {
-      const productId = editingProduct.id;
+      const productId = editingProduct.productId;
 
       const changes = getChangedFields(editingProduct, productData);
       console.log(changes);
@@ -165,17 +103,92 @@ const ProductsManager = ({ source }) => {
     setIsModalOpen(false);
   };
 
+  const headers = [
+    { key: "productId", label: "ID", sortable: false },
+    { key: "title", label: "Title", sortable: true },
+    { key: "price", label: "Price (₹)", sortable: true },
+    { key: "brand", label: "Brand", sortable: true },
+    { key: "category", label: "Category", sortable: true },
+    { key: "stock", label: "Stock", sortable: true },
+    { key: "stockStatus", label: "Status", sortable: true },
+    { key: "actions", label: "Actions", sortable: false },
+  ];
+
+  const customRenderers = {
+    stockStatus: {
+      rendererType: "statusDropdown",
+      interactiveStatuses: [],
+      statuses: [
+        {
+          value: "In Stock",
+          label: "In Stock",
+        },
+        {
+          value: "Out of Stock",
+          label: "Out of Stock",
+        },
+      ],
+    },
+    actions: {
+      rendererType: "actionButton",
+      actions: [
+        {
+          label: "View",
+          func: (row) => navigate(`/product-details/${row.productId}`),
+        },
+        {
+          label: "Edit",
+          func: (row) => handleEditClick(row),
+        },
+
+        {
+          label: "Remove",
+          func: async (row) => {
+            const isConfirmed = await confirmToast(`Delete ${row.title}?`);
+
+            if (isConfirmed) {
+              await removeProduct({
+                productId: row.productId,
+              });
+            }
+          },
+        },
+      ],
+    },
+  };
+
+  const filters = [
+    { label: "All", key: "ALL", value: "ALL" },
+    { label: "In Stock", key: "stockStatus", value: "In Stock" },
+    { label: "Out of Stock", key: "stockStatus", value: "Out of Stock" },
+  ];
+
+  const searchFields = [
+    { label: "Product ID", key: "productId" },
+    { label: "Product Title", key: "title" },
+    { label: "Brand Name", key: "brand" },
+    { label: "Category", key: "category" },
+  ];
+
+  const toolbar = [
+    { label: "Add Product", func: () => handleCreateClick() },
+    // { label: "Add Product", func: () => alert("Product Added") },
+    // { label: "Add Product", func: () => alert("Product Added") },
+    // { label: "Add Product", func: () => alert("Product Added") },
+  ];
+
   return (
     <section>
+      {/* -----------------Table------------------- */}
       <ResourceTable
-        data={products}
-        headers={headers}
-        rowActions={rowActions}
-        filterOptions={["All", "In Stock", "Out of Stock"]}
-        searchKeys={["id", "brand"]}
         title={"Products"}
-        placeHolder={"Search by Product ID or Brand"}
-        handleCreateClick={handleCreateClick}
+        collectionName="products"
+        source={source}
+        headers={headers}
+        customRenderers={customRenderers}
+        filters={filters}
+        searchFields={searchFields}
+        toolbar={toolbar}
       />
 
       {/* -----------------Modal------------------- */}

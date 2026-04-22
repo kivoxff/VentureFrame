@@ -21,7 +21,7 @@ function Navbar() {
 
   const { user, hasRole, googleLogin: login, authLoading } = useAuth();
   const firstName = user?.displayName?.split(" ").at(0) || "Account";
-  const isSeller = hasRole("seller");
+  const isSeller = hasRole("SELLER");
 
   const navigate = useNavigate();
 

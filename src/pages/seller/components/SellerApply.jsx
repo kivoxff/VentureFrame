@@ -6,6 +6,20 @@ import { doc, getDoc, setDoc, updateDoc } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import { httpsCallable } from "firebase/functions";
 
+// APPLICATION_NOT_SUBMITTED -> Show Seller Form
+
+// APPLICATION_SUBMITTED -> Show Application Pending
+
+// APPLICATION_REJECTED -> Show Application Rejected
+
+// KYC_NOT_SUBMITTED -> Show KYC Form
+
+// KYC_SUBMITTED -> Show KYC Pending
+
+// KYC_REJECTED -> Show KYC Rejected
+
+// KYC_VERIFIED -> Fully Approved
+
 const SellerForm = ({ onSave, initialData = null }) => {
   const emptyForm = {
     storeName: "",
@@ -619,6 +633,37 @@ const RejectionStatusCard = ({
   );
 };
 
+const SellerVerifiedCard = ({ storeName = "Store Name" }) => {
+  return (
+    <div className="p-4 flex flex-col justify-center items-center grow-3 bg-green-50 border shadow-2xl rounded-2xl">
+      <div className="text-8xl text-center">🎉</div>
+
+      <div className="text-center mt-4">
+        <h4 className="text-4xl font-semibold">Seller Verified</h4>
+
+        <p className="mt-2 text-gray-500">
+          Congratulations!{" "}
+          <span className="text-green-600 font-medium uppercase">
+            {storeName}
+          </span>{" "}
+          is now verified and ready to start selling.
+        </p>
+
+        <p className="mt-2 text-sm text-gray-400">
+          You can now manage products, orders, and grow your business.
+        </p>
+      </div>
+
+      <Link
+        to="/seller-dashboard"
+        className="mt-4 p-3 w-1/3 bg-green-600 hover:bg-green-800 transition-colors text-center text-white font-medium rounded-xl"
+      >
+        Go To Dashboard
+      </Link>
+    </div>
+  );
+};
+
 function SellerApply() {
   const howItWorks = [
     {
@@ -751,7 +796,8 @@ function SellerApply() {
     setSellerData((prev) => ({
       ...prev,
       ...changes,
-      sellerStatus: "PENDING",
+      sellerStatus: "REVIEWING_SELLER",
+      currentStatus: "APPLICATION_SUBMITTED",
       createdAt: new Date(),
     }));
   };
@@ -806,8 +852,14 @@ function SellerApply() {
     setSellerKyc((prev) => ({
       ...prev,
       ...changes,
-      kycStatus: "UNDER_REVIEW",
+      kycStatus: "REVIEWING_KYC",
       updatedAt: new Date(),
+    }));
+
+    setSellerData((prev) => ({
+      ...prev,
+      kycStatus: "REVIEWING_KYC",
+      currentStatus: "KYC_SUBMITTED",
     }));
   };
 
@@ -818,6 +870,7 @@ function SellerApply() {
       setSellerData((prev) => ({
         ...prev,
         sellerStatus: "DRAFT",
+        currentStatus: "APPLICATION_NOT_SUBMITTED",
         rejectReason: null,
       }));
     } catch (error) {
@@ -831,8 +884,14 @@ function SellerApply() {
       await reapply({ sid: sellerData.sellerId });
       setSellerKyc((prev) => ({
         ...prev,
-        kycStatus: "NOT_SUBMITTED",
+        kycStatus: "UNVERIFIED",
         rejectReason: null,
+      }));
+
+      setSellerData((prev) => ({
+        ...prev,
+        kycStatus: "UNVERIFIED",
+        currentStatus: "KYC_NOT_SUBMITTED",
       }));
     } catch (error) {
       console.log("Error resubmit application", error.message);
@@ -840,62 +899,65 @@ function SellerApply() {
   };
 
   const getHeaderContent = () => {
-    const sellerStatus = sellerData?.sellerStatus;
-    const kycStatus = sellerKyc?.kycStatus;
+    const currentStatus = sellerData?.currentStatus;
 
-    switch (sellerStatus) {
-      case "DRAFT":
-        return {
-          title: "Update Your Seller Application 📝",
-          subTitle: "Edit your store details and submit again for approval.",
-        };
+    switch (currentStatus) {
+      case "APPLICATION_NOT_SUBMITTED":
+        return sellerData?.sellerId
+          ? {
+              title: "Update Your Seller Application 📝",
+              subTitle:
+                "Edit your store details and submit again for approval.",
+            }
+          : {
+              title: "Start Selling With Us 🚀",
+              subTitle:
+                "Join thousands of sellers and reach millions of customers. Fill out the form below to submit your store for approval",
+            };
 
-      case "PENDING":
+      case "APPLICATION_SUBMITTED":
         return {
           title: "Application Pending ⌛",
           subTitle:
             "Your application is under review. Please wait for admin approval before you can start selling.",
         };
 
-      case "REJECTED":
+      case "APPLICATION_REJECTED":
         return {
           title: "Application Rejected 🚩",
           subTitle:
             "Your seller application did not meet the approval requirements. You may update your information and reapply.",
         };
 
-      case "KYC_PENDING":
-        switch (kycStatus) {
-          case "NOT_SUBMITTED":
-            return {
-              title: "Update Your KYC Details 🪪",
-              subTitle:
-                "Fill out the required documents and submit again for verification.",
-            };
+      case "KYC_NOT_SUBMITTED":
+        return {
+          title: "Update Your KYC Details 🪪",
+          subTitle:
+            "Fill out the required documents and submit again for verification.",
+        };
 
-          case "UNDER_REVIEW":
-            return {
-              title: "KYC Under Review ⏳",
-              subTitle:
-                "Your KYC documents have been submitted and are currently under review. You will be able to start selling once verification is successful.",
-            };
+      case "KYC_SUBMITTED":
+        return {
+          title: "KYC Under Review ⏳",
+          subTitle:
+            "Your KYC documents have been submitted and are currently under review. You will be able to start selling once verification is successful.",
+        };
 
-          case "REJECTED":
-            return {
-              title: "KYC Verification Failed ⚠️",
-              subTitle:
-                "There was an issue with your submitted KYC documents. Please update the required information and resubmit to proceed with selling.",
-            };
+      case "KYC_REJECTED":
+        return {
+          title: "KYC Verification Failed ⚠️",
+          subTitle:
+            "There was an issue with your submitted KYC documents. Please update the required information and resubmit to proceed with selling.",
+        };
 
-          default:
-            return {
-              title: "Application Approved 🎉",
-              subTitle:
-                "Congratulations! Your seller application has been approved. Please fill out your KYC form to complete the verification.",
-            };
-        }
+      case "KYC_VERIFIED":
+        return {
+          title: "Application Approved 🎉",
+          subTitle:
+            "Congratulations! Your seller profile is verified and active.",
+        };
 
-      default:
+      default: // Fallback for completely new users where currentStatus is undefined
         return {
           title: "Start Selling With Us 🚀",
           subTitle:
@@ -905,11 +967,10 @@ function SellerApply() {
   };
 
   const renderMainCard = () => {
-    const sellerStatus = sellerData?.sellerStatus;
-    const kycStatus = sellerKyc?.kycStatus;
+    const currentStatus = sellerData?.currentStatus;
 
-    switch (sellerStatus) {
-      case "PENDING":
+    switch (currentStatus) {
+      case "APPLICATION_SUBMITTED":
         return (
           <SubmissionStatusCard
             storeName={sellerData.storeName}
@@ -917,7 +978,7 @@ function SellerApply() {
           />
         );
 
-      case "REJECTED":
+      case "APPLICATION_REJECTED":
         return (
           <RejectionStatusCard
             storeName={sellerData.storeName}
@@ -926,31 +987,34 @@ function SellerApply() {
           />
         );
 
-      case "KYC_PENDING":
-        switch (kycStatus) {
-          case "UNDER_REVIEW":
-            return (
-              <SubmissionStatusCard
-                type="kyc"
-                storeName={sellerData.storeName}
-                submitDate={sellerKyc.updatedAt}
-              />
-            );
+      case "KYC_NOT_SUBMITTED":
+        return <SellerKYCForm onSave={submitKYC} initialData={sellerKyc} />;
 
-          case "REJECTED":
-            return (
-              <RejectionStatusCard
-                type="kyc"
-                storeName={sellerData.storeName}
-                declineReason={sellerKyc.rejectReason}
-                onReapply={resubmitKYC}
-              />
-            );
+      case "KYC_SUBMITTED":
+        return (
+          <SubmissionStatusCard
+            type="kyc"
+            storeName={sellerData.storeName}
+            submitDate={sellerKyc?.updatedAt || sellerData.createdAt}
+          />
+        );
 
-          default:
-            return <SellerKYCForm onSave={submitKYC} initialData={sellerKyc} />;
-        }
+      case "KYC_REJECTED":
+        return (
+          <RejectionStatusCard
+            type="kyc"
+            storeName={sellerData.storeName}
+            declineReason={sellerKyc?.rejectReason || sellerData.rejectReason}
+            onReapply={resubmitKYC}
+          />
+        );
 
+      case "KYC_VERIFIED":
+        return (
+         <SellerVerifiedCard storeName={sellerData.storeName}/>
+        );
+
+      case "APPLICATION_NOT_SUBMITTED":
       default:
         return (
           <SellerForm onSave={submitApplication} initialData={sellerData} />

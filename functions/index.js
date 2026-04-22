@@ -21,14 +21,71 @@ exports.createNewUser = functions.auth.user().onCreate(async (user) => {
       displayName: user.displayName ?? null,
       email: user.email,
       photoURL: user.photoURL ?? null,
-      roles: ["user"],
-      userStatus: "active",
+      roles: ["USER"],
+      primaryRole: "USER",
+      userStatus: "ACTIVE",
       createdAt: FieldValue.serverTimestamp(),
     });
 
     console.log("User created in Firestore:", user.uid);
   } catch (err) {
     console.error("Error creating user:", err.message);
+  }
+});
+
+exports.manageUserStatus = functions.https.onCall(async (data, context) => {
+  try {
+    const { userId, accountStatus } = data;
+
+    const callerToken = context.auth.token;
+    const callerUid = context.auth.uid;
+
+    // Prevent self MODIFY
+    if (callerUid === userId) {
+      throw new functions.https.HttpsError(
+        "failed-precondition",
+        "You cannot block/active your own account.",
+      );
+    }
+
+    const userRef = db.collection("users").doc(userId);
+
+    // Ensure user doc exists
+    const userSnap = await userRef.get();
+
+    if (!userSnap.exists) {
+      throw new functions.https.HttpsError("not-found", "User not found.");
+    }
+
+    // Block / Activate Auth account
+    if (accountStatus === "BLOCKED") {
+      await admin.auth().updateUser(userId, {
+        disabled: true,
+      });
+
+      // Force logout all devices
+      await admin.auth().revokeRefreshTokens(userId);
+    }
+
+    if (accountStatus === "ACTIVE") {
+      await admin.auth().updateUser(userId, {
+        disabled: false,
+      });
+    }
+
+    // Update Firestore
+    await userRef.update({
+      userStatus: accountStatus,
+      updatedAt: FieldValue.serverTimestamp(),
+      updatedBy: callerUid,
+    });
+
+    return {
+      success: true,
+      message: `User account marked as ${accountStatus}`,
+    };
+  } catch (err) {
+    console.error(err.message);
   }
 });
 
@@ -46,12 +103,65 @@ exports.createNewSeller = functions.https.onCall(async (data, context) => {
       ownerId: context.auth.uid,
       sellerId: sellerRef.id,
       sellerStatus: "DRAFT",
+      currentStatus: "APPLICATION_NOT_SUBMITTED",
     });
 
     console.log("Seller created in Firestore:", sellerRef.id);
     return sellerRef.id;
   } catch (err) {
     console.error("Error creating seller:", err.message);
+  }
+});
+
+exports.manageSellerStatus = functions.https.onCall(async (data, context) => {
+  try {
+    const { sellerId, accountStatus } = data;
+
+    const callerToken = context.auth.token;
+    const callerUid = context.auth.uid;
+
+    const sellerRef = db.collection("sellers").doc(sellerId);
+
+    // Ensure user doc exists
+    const sellerSnap = await sellerRef.get();
+
+    if (!sellerSnap.exists) {
+      throw new functions.https.HttpsError("not-found", "User not found.");
+    }
+
+    // Prevent self MODIFY
+    if (sellerSnap.data().ownerId === callerUid) {
+      throw new functions.https.HttpsError(
+        "failed-precondition",
+        "You cannot block/active your own account.",
+      );
+    }
+
+    // Block / Activate Auth account
+    if (accountStatus === "BLOCKED") {
+      await sellerRef.update({
+        sellerStatus: "BLOCKED",
+        currentStatus: "SELLER_BLOCKED",
+        updatedAt: FieldValue.serverTimestamp(),
+        updatedBy: callerUid,
+      });
+    }
+
+    if (accountStatus === "ACTIVE") {
+      await sellerRef.update({
+        sellerStatus: "ACTIVE",
+        currentStatus: "KYC_VERIFIED",
+        updatedAt: FieldValue.serverTimestamp(),
+        updatedBy: callerUid,
+      });
+    }
+
+    return {
+      success: true,
+      message: `Seller account marked as ${accountStatus}`,
+    };
+  } catch (err) {
+    console.error(err.message);
   }
 });
 
@@ -65,7 +175,8 @@ exports.submitSellerApplication = functions.https.onCall(async (_, context) => {
     const sellerRef = docSnap.docs[0].ref;
 
     await sellerRef.update({
-      sellerStatus: "PENDING",
+      sellerStatus: "REVIEWING_SELLER",
+      currentStatus: "APPLICATION_SUBMITTED",
       createdAt: FieldValue.serverTimestamp(),
     });
   } catch (err) {
@@ -86,12 +197,13 @@ exports.submitSellerKYC = functions.https.onCall(async (_, context) => {
     const kycRef = db.collection("sellers").doc(sid).collection("kyc").doc(sid);
 
     await kycRef.update({
-      kycStatus: "UNDER_REVIEW",
+      kycStatus: "REVIEWING_KYC",
       updatedAt: FieldValue.serverTimestamp(),
     });
 
     await sellerRef.update({
-      kycStatus: "UNDER_REVIEW",
+      kycStatus: "REVIEWING_KYC",
+      currentStatus: "KYC_SUBMITTED",
     });
   } catch (err) {
     console.error("Error submiting kyc", err.message);
@@ -105,6 +217,7 @@ exports.rejectSeller = functions.https.onCall(async (data, context) => {
     const sellerRef = db.collection("sellers").doc(sid);
     await sellerRef.update({
       sellerStatus: "REJECTED",
+      currentStatus: "APPLICATION_REJECTED",
       rejectReason: reason,
     });
   } catch (err) {
@@ -118,7 +231,9 @@ exports.approveSeller = functions.https.onCall(async (data, context) => {
   try {
     const sellerRef = db.collection("sellers").doc(sid);
     await sellerRef.update({
-      sellerStatus: "KYC_PENDING",
+      sellerStatus: "APPROVED",
+      kycStatus: "UNVERIFIED",
+      currentStatus: "KYC_NOT_SUBMITTED",
     });
   } catch (err) {
     console.error("Error approving seller", err.message);
@@ -133,11 +248,12 @@ exports.rejectKYC = functions.https.onCall(async (data, context) => {
     const kycRef = db.collection("sellers").doc(sid).collection("kyc").doc(sid);
 
     await sellerRef.update({
-      kycStatus: "REJECTED",
+      kycStatus: "INVALID",
+      currentStatus: "KYC_REJECTED",
     });
 
     await kycRef.update({
-      kycStatus: "REJECTED",
+      kycStatus: "INVALID",
       rejectReason: reason,
     });
   } catch (err) {
@@ -156,6 +272,7 @@ exports.approveKYC = functions.https.onCall(async (data, context) => {
     await sellerRef.update({
       sellerStatus: "ACTIVE",
       kycStatus: "VERIFIED",
+      currentStatus: "KYC_VERIFIED",
     });
 
     await kycRef.update({
@@ -191,6 +308,7 @@ exports.reapplySeller = functions.https.onCall(async (data, context) => {
     await sellerref.update({
       sellerStatus: "DRAFT",
       rejectReason: null,
+      currentStatus: "APPLICATION_NOT_SUBMITTED",
     });
   } catch (err) {
     console.error("Error reapplying seller", err.message);
@@ -205,14 +323,17 @@ exports.reapplyKYC = functions.https.onCall(async (data, context) => {
     const kycRef = sellerRef.collection("kyc").doc(sid);
 
     await sellerRef.update({
-      kycStatus: "NOT_SUBMITTED",
+      kycStatus: "UNVERIFIED",
+      currentStatus: "KYC_NOT_SUBMITTED",
     });
 
     await kycRef.update({
-      kycStatus: "NOT_SUBMITTED",
+      kycStatus: "UNVERIFIED",
       rejectReason: null,
     });
-  } catch (err) {}
+  } catch (err) {
+    console.error(err.message);
+  }
 });
 
 exports.createNewProduct = functions.https.onCall(async (data, context) => {
@@ -825,9 +946,31 @@ exports.createOrder = functions.https.onCall(async (data, context) => {
       0,
     );
 
-    let discountAmount = 0;
+    const sellerGroups = {};
+    processedProducts.forEach((p) => {
+      const itemSubTotal = p.price * p.qty;
+
+      if (!sellerGroups[p.sellerId]) {
+        sellerGroups[p.sellerId] = {
+          items: [],
+          total: 0,
+        };
+      }
+
+      sellerGroups[p.sellerId].items.push({
+        productId: p.id,
+        title: p.name,
+        storeId: p.sellerId,
+        image: p.images[0].url,
+        quantity: p.qty,
+        price: p.price,
+      });
+
+      sellerGroups[p.sellerId].total += itemSubTotal;
+    });
 
     // Process Coupon
+    let discountAmount = 0;
     if (couponCode && couponSnap && couponSnap.exists) {
       const couponData = couponSnap.data();
 
@@ -949,14 +1092,37 @@ exports.createOrder = functions.https.onCall(async (data, context) => {
 
     const { firstName, lastName, email, street, city, pinCode } = address;
 
+    const subOrderIds = [];
+    Object.entries(sellerGroups).forEach(([sellerId, group]) => {
+      const subOrderRef = db.collection("subOrders").doc();
+      subOrderIds.push(subOrderRef.id);
+
+      tx.set(subOrderRef, {
+        subOrderId: subOrderRef.id,
+        orderId: orderId, // Link to master order
+        sellerId: sellerId,
+        customerId: uid,
+        customerName: `${firstName} ${lastName}`,
+        shippingAddress: { firstName, lastName, street, city, pinCode },
+        items: group.items,
+        subTotal: group.total,
+        platformCommission: (group.total * 10) / 100, // Pro-rated commission
+        paymentMethod: paymentMethod,
+        orderStatus: initialStatus,
+        paymentStatus: paymentMethod === "COD" ? "PENDING" : "PENDING",
+        createdAt: FieldValue.serverTimestamp(),
+      });
+    });
+
     tx.set(orderRef, {
       userId: uid,
       orderId,
+      subOrderIds: subOrderIds,
 
       customerName: `${firstName} ${lastName}`,
       email,
 
-      address: {
+      shippingAddress: {
         firstName,
         lastName,
         email,
@@ -993,7 +1159,7 @@ exports.createOrder = functions.https.onCall(async (data, context) => {
         // Keep metadata so the Webhook still knows which order to fulfill!
         metadata: {
           orderId: transactionResult.orderId,
-          uid: uid,
+          uid,
         },
       });
 
@@ -1052,8 +1218,14 @@ exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
 
       const order = orderSnap.data();
 
-      if (order.status !== "PENDING_PAYMENT" && order.status !== "FAILED")
+      if (order.orderStatus !== "PENDING" && order.orderStatus !== "FAILED")
         return;
+      return;
+
+      // Generate references for all associated sub-orders
+      const subOrderRefs = (order.subOrderIds || []).map((id) =>
+        db.collection("subOrders").doc(id),
+      );
 
       // On success
       if (event.type === "payment_intent.succeeded") {
@@ -1061,12 +1233,22 @@ exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
         tx.update(orderRef, {
           paymentStatus: "PAID",
           orderStatus: "PLACED",
+          currentStatus: "PLACED",
         });
+        subOrderRefs.forEach((ref) =>
+          tx.update(ref, {
+            paymentStatus: "PAID",
+            orderStatus: "PLACED",
+            currentStatus: "PLACED",
+          }),
+        );
 
         // Process each item in the order
         for (const item of order.items) {
           const productRef = db.collection("products").doc(item.productId);
-          const resProductRef = db.collection("reservedProducts").doc(item.productId);
+          const resProductRef = db
+            .collection("reservedProducts")
+            .doc(item.productId);
 
           // Permanently deduct the stock
           tx.update(productRef, {
@@ -1106,11 +1288,16 @@ exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
         event.type === "payment_intent.canceled"
       ) {
         // Mark the order as failed
-        tx.update(orderRef, { status: "FAILED" });
+        tx.update(orderRef, { orderStatus: "FAILED", currentStatus: "FAILED" });
+        subOrderRefs.forEach((ref) =>
+          tx.update(ref, { orderStatus: "FAILED", currentStatus: "FAILED" }),
+        );
 
         // Release the temporary hold
         for (const item of order.items) {
-          const resProductRef = db.collection("reservedProducts").doc(item.productId);
+          const resProductRef = db
+            .collection("reservedProducts")
+            .doc(item.productId);
 
           tx.update(resProductRef, {
             [orderId]: FieldValue.delete(),
@@ -1188,6 +1375,7 @@ exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
 
 exports.updateOrder = functions.https.onCall(async (data, context) => {
   const { orderId, action } = data;
+  const { uid } = context.auth;
 
   if (!["SHIPPED", "DELIVERED", "CANCELLED"].includes(action)) {
     throw new functions.https.HttpsError("invalid-argument", "Invalid action");
@@ -1196,6 +1384,13 @@ exports.updateOrder = functions.https.onCall(async (data, context) => {
   const orderRef = db.collection("orders").doc(orderId);
   const orderSnap = await orderRef.get();
   const orderData = orderSnap.data();
+
+  if (uid === orderData.userId) {
+    throw new functions.https.HttpsError(
+      "failed-precondition",
+      "You cannot change your own order.",
+    );
+  }
 
   const orderUpdates = {}; // store all order updates
 
@@ -1237,198 +1432,395 @@ exports.updateOrder = functions.https.onCall(async (data, context) => {
   }
 });
 
-exports.syncStats = functions.firestore
-  .document("orders/{orderId}")
-  .onUpdate(async (change, context) => {
-    const beforeData = change.before.data();
-    const afterData = change.after.data();
+// exports.syncStats = functions.firestore
+//   .document("orders/{orderId}")
+//   .onUpdate(async (change, context) => {
+//     const beforeData = change.before.data();
+//     const afterData = change.after.data();
 
-    const preStatus = beforeData.orderStatus;
-    const currStatus = afterData.orderStatus;
+//     const preStatus = beforeData.orderStatus;
+//     const currStatus = afterData.orderStatus;
 
-    const isCompleted = preStatus !== "COMPLETED" && currStatus === "COMPLETED";
-    const isCancelled = preStatus === "COMPLETED" && currStatus === "CANCELLED"; // rare but possible i.e. cancelled after order complition
+//     const isCompleted = preStatus !== "COMPLETED" && currStatus === "COMPLETED";
+//     const isCancelled = preStatus === "COMPLETED" && currStatus === "CANCELLED"; // rare but possible i.e. cancelled after order complition
 
-    if (!isCompleted && !isCancelled) return null;
+//     if (!isCompleted && !isCancelled) return null;
 
-    const factor = isCompleted ? 1 : -1;
-    const monthKey = new Date().toISOString().slice(0, 7);
+//     const factor = isCompleted ? 1 : -1;
+//     const monthKey = new Date().toISOString().slice(0, 7);
 
+//     const batch = db.batch();
+
+//     const platformOverviewRef = db.doc("platformStates/overview");
+//     const platformMonthlyRef = db.doc("platformStates/monthly");
+
+//     // PLATFORM OVERVIEW
+//     batch.set(
+//       platformOverviewRef,
+//       {
+//         totalRevenue: FieldValue.increment(factor * afterData.totalAmount),
+//         totalCommission: FieldValue.increment(
+//           factor * afterData.platformCommission,
+//         ),
+//         totalOrders: FieldValue.increment(factor * 1),
+//       },
+//       { merge: true },
+//     );
+
+//     // PLATFORM MONTHLY
+//     batch.set(
+//       platformMonthlyRef,
+//       {
+//         [monthKey]: {
+//           revenue: FieldValue.increment(factor * afterData.totalAmount),
+//           orders: FieldValue.increment(factor * 1),
+//         },
+//       },
+//       { merge: true },
+//     );
+
+//     // GROUP ITEMS BY STORE
+//     const storeMap = {};
+//     afterData.items.forEach((item) => {
+//       const { storeId, price, quantity } = item;
+
+//       if (!storeMap[storeId]) {
+//         storeMap[storeId] = {
+//           revenue: 0,
+//           qty: 0,
+//           items: [],
+//         };
+//       }
+
+//       storeMap[storeId].revenue += price * quantity;
+//       storeMap[storeId].qty += quantity;
+//       storeMap[storeId].items.push(item);
+//     });
+
+//     // STORE STATS
+//     for (const storeId in storeMap) {
+//       const storeData = storeMap[storeId];
+
+//       const storeOverviewRef = db.doc(`stores/${storeId}/stats/overview`);
+//       const storeMonthlyRef = db.doc(`stores/${storeId}/stats/monthly`);
+//       const productRef = db.doc(`stores/${storeId}/stats/products`);
+
+//       // store overview
+//       batch.set(
+//         storeOverviewRef,
+//         {
+//           totalRevenue: FieldValue.increment(factor * storeData.revenue),
+//           totalOrders: FieldValue.increment(factor * 1),
+//           productsSold: FieldValue.increment(factor * storeData.qty),
+//         },
+//         { merge: true },
+//       );
+
+//       // store monthly
+//       batch.set(
+//         storeMonthlyRef,
+//         {
+//           [monthKey]: {
+//             revenue: FieldValue.increment(factor * storeData.revenue),
+//             orders: FieldValue.increment(factor * 1),
+//           },
+//         },
+//         { merge: true },
+//       );
+
+//       // Products States
+//       storeData.items.forEach((item) => {
+//         const { productId, title, quantity, price } = item;
+
+//         batch.set(
+//           productRef,
+//           {
+//             [productId]: {
+//               title,
+//               sales: FieldValue.increment(factor * quantity),
+//               revenue: FieldValue.increment(factor * (price * quantity)),
+//             },
+//           },
+//           { merge: true },
+//         );
+//       });
+//     }
+
+//     try {
+//       await batch.commit();
+//       return null;
+//     } catch (err) {
+//       console.error(err.message);
+//     }
+//   });
+
+// Testing
+exports.seedDatabase = functions.https.onCall(async (data, context) => {
+  try {
+    const db = admin.firestore();
     const batch = db.batch();
 
-    const platformOverviewRef = db.doc("platformStates/overview");
-    const platformMonthlyRef = db.doc("platformStates/monthly");
+    // Arrays and maps to hold references for relational mapping
+    const authUsersToImport = [];
+    const seededSellerUids = [];
+    const seededCustomerUids = [];
+    const seededSellers = [];
+    const seededProducts = [];
 
-    // PLATFORM OVERVIEW
-    batch.set(
-      platformOverviewRef,
-      {
-        totalRevenue: FieldValue.increment(factor * afterData.totalAmount),
-        totalCommission: FieldValue.increment(
-          factor * afterData.platformCommission,
-        ),
-        totalOrders: FieldValue.increment(factor * 1),
-      },
-      { merge: true },
-    );
+    // NEW: Map to link Auth UIDs to newly generated Seller IDs
+    const sellerMap = {};
 
-    // PLATFORM MONTHLY
-    batch.set(
-      platformMonthlyRef,
-      {
-        [monthKey]: {
-          revenue: FieldValue.increment(factor * afterData.totalAmount),
-          orders: FieldValue.increment(factor * 1),
-        },
-      },
-      { merge: true },
-    );
+    console.log("Starting database seed...");
 
-    // GROUP ITEMS BY STORE
-    const storeMap = {};
-    afterData.items.forEach((item) => {
-      const { storeId, price, quantity } = item;
+    const runId = Date.now();
 
-      if (!storeMap[storeId]) {
-        storeMap[storeId] = {
-          revenue: 0,
-          qty: 0,
-          items: [],
-        };
-      }
+    // ==========================================
+    // 1. SEED USERS IN FIREBASE AUTH (As Google Users)
+    // ==========================================
+    console.log("Preparing Auth Users with Google Provider...");
 
-      storeMap[storeId].revenue += price * quantity;
-      storeMap[storeId].qty += quantity;
-      storeMap[storeId].items.push(item);
-    });
+    // Prepare 3 Seller Users
+    for (let i = 1; i <= 3; i++) {
+      const uid = `google_seller_${runId}_${i}`;
 
-    // STORE STATS
-    for (const storeId in storeMap) {
-      const storeData = storeMap[storeId];
+      // Generate the seller document reference early so we have the ID
+      const sellerRef = db.collection("sellers").doc();
+      sellerMap[uid] = sellerRef.id;
 
-      const storeOverviewRef = db.doc(`stores/${storeId}/stats/overview`);
-      const storeMonthlyRef = db.doc(`stores/${storeId}/stats/monthly`);
-      const productRef = db.doc(`stores/${storeId}/stats/products`);
+      seededSellerUids.push(uid);
 
-      // store overview
-      batch.set(
-        storeOverviewRef,
-        {
-          totalRevenue: FieldValue.increment(factor * storeData.revenue),
-          totalOrders: FieldValue.increment(factor * 1),
-          productsSold: FieldValue.increment(factor * storeData.qty),
-        },
-        { merge: true },
-      );
-
-      // store monthly
-      batch.set(
-        storeMonthlyRef,
-        {
-          [monthKey]: {
-            revenue: FieldValue.increment(factor * storeData.revenue),
-            orders: FieldValue.increment(factor * 1),
-          },
-        },
-        { merge: true },
-      );
-
-      // Products States
-      storeData.items.forEach((item) => {
-        const { productId, title, quantity, price } = item;
-
-        batch.set(
-          productRef,
+      authUsersToImport.push({
+        uid: uid,
+        email: `demo.seller${i}@example.com`,
+        emailVerified: true,
+        displayName: `Demo Owner ${i}`,
+        photoURL: `https://picsum.photos/seed/seller${i}/200`,
+        customClaims: { roles: ["SELLER"] }, // UPDATED: Auth claim is now SELLER
+        providerData: [
           {
-            [productId]: {
-              title,
-              sales: FieldValue.increment(factor * quantity),
-              revenue: FieldValue.increment(factor * (price * quantity)),
-            },
+            uid: `google_uid_${uid}`,
+            email: `demo.seller${i}@example.com`,
+            displayName: `Demo Owner ${i}`,
+            photoURL: `https://picsum.photos/seed/seller${i}/200`,
+            providerId: "google.com",
           },
-          { merge: true },
-        );
+        ],
       });
     }
 
-    try {
-      await batch.commit();
-      return null;
-    } catch (err) {
-      console.error(err.message);
-    }
-  });
+    // Prepare 5 Customer Users
+    for (let i = 1; i <= 5; i++) {
+      const uid = `google_customer_${runId}_${i}`;
+      seededCustomerUids.push(uid);
 
-// Testing
-exports.seedTestProducts = functions.https.onCall(async (data, context) => {
-  try {
-    const { count = 5 } = data;
-
-    const categories = ["electronics", "clothing", "mobiles"];
-    const brands = ["Sony", "Nike", "Apple", "Samsung", "Adidas"];
-    const features = [
-      "Premium Quality",
-      "1 Year Warranty",
-      "Best Seller",
-      "Limited Edition",
-    ];
-
-    // 👇 Add mock seller IDs here
-    const sellerIds = [
-      "seller_101",
-      "seller_102",
-      "seller_103",
-      "seller_104",
-      "seller_105",
-    ];
-
-    const batch = db.batch();
-
-    for (let i = 0; i < count; i++) {
-      const productRef = db.collection("products").doc();
-      const productId = productRef.id;
-
-      const originalPrice = Math.floor(Math.random() * 5000) + 500;
-      const discount = Math.floor(Math.random() * 40);
-      const stock = Math.floor(Math.random() * 50);
-
-      const priceWithDiscount = Math.ceil(
-        originalPrice - (originalPrice * discount) / 100
-      );
-
-      const randomSellerId =
-        sellerIds[Math.floor(Math.random() * sellerIds.length)];
-
-      const productData = {
-        productId,
-        createdBy: "ventureFrame",
-        sellerId: randomSellerId, // 👈 now dynamic
-        storeName: "VentureFrame",
-        stockStatus: stock > 0 ? "In Stock" : "Out of Stock",
-        price: priceWithDiscount,
-        originalPrice,
-        discount,
-        stock,
-        title: `Test Product ${i + 1}`,
-        brand: brands[Math.floor(Math.random() * brands.length)],
-        category: categories[Math.floor(Math.random() * categories.length)],
-        description: "This is a test product generated for development.",
-        features: [features[Math.floor(Math.random() * features.length)]],
-        options: [],
-        specs: [],
-        images: [
+      authUsersToImport.push({
+        uid: uid,
+        email: `demo.customer${i}@example.com`,
+        emailVerified: true,
+        displayName: `John Doe ${i}`,
+        photoURL: `https://picsum.photos/seed/customer${i}/200`,
+        customClaims: { roles: ["USER"] },
+        providerData: [
           {
-            url: `https://picsum.photos/400?random=${i}`,
-            path: null,
+            uid: `google_uid_${uid}`,
+            email: `demo.customer${i}@example.com`,
+            displayName: `John Doe ${i}`,
+            photoURL: `https://picsum.photos/seed/customer${i}/200`,
+            providerId: "google.com",
           },
         ],
+      });
+    }
+
+    // Import users to Firebase Auth
+    await admin.auth().importUsers(authUsersToImport);
+    console.log("Imported Google Users successfully.");
+
+    // ==========================================
+    // 2. CREATE FIRESTORE USER DOCUMENTS
+    // ==========================================
+    for (const user of authUsersToImport) {
+      const userRef = db.collection("users").doc(user.uid);
+
+      // Check if this user UID exists in our sellerMap
+      const isSeller = sellerMap[user.uid] !== undefined;
+
+      const userData = {
+        userId: user.uid,
+        displayName: user.displayName ?? null,
+        email: user.email,
+        photoURL: user.photoURL ?? null,
+        // UPDATED: Dynamically assign roles based on whether they are a seller
+        roles: isSeller ? ["SELLER"] : ["USER"],
+        primaryRole: isSeller ? "SELLER" : "USER",
+        userStatus: "ACTIVE",
+        createdAt: FieldValue.serverTimestamp(),
+      };
+
+      // UPDATED: Inject the sellerId into the user document if applicable
+      if (isSeller) {
+        userData.sellerId = sellerMap[user.uid];
+      }
+
+      batch.set(userRef, userData);
+    }
+
+    // ==========================================
+    // 3. SEED SELLERS (Linked to Google Auth UIDs)
+    // ==========================================
+    for (let i = 0; i < 3; i++) {
+      const ownerId = seededSellerUids[i];
+      const sellerId = sellerMap[ownerId]; // Retrieve the pre-generated ID
+      const sellerRef = db.collection("sellers").doc(sellerId);
+
+      const sellerData = {
+        sellerId: sellerId,
+        ownerId: ownerId,
+        storeName: `VentureFrame Demo Store ${i + 1}`,
+        ownerName: `Demo Owner ${i + 1}`,
+        contactMail: `demo.seller${i + 1}@example.com`,
+        logo: `https://picsum.photos/seed/store${i + 1}/200`,
+        storeCategories: ["electronics", "clothing", "mobiles"],
+        storeAddress: `${i + 1}00 Tech Avenue, Andheri East, Mumbai - 400069`,
+        aboutStore:
+          "We are an authorized reseller providing premium quality products with standard warranties.",
+        sellerStatus: "ACTIVE",
+        kycStatus: "VERIFIED",
+        currentStatus: "KYC_VERIFIED",
+        totalProducts: 0,
+        totalSales: 0,
+        createdAt: FieldValue.serverTimestamp(),
+      };
+
+      batch.set(sellerRef, sellerData);
+      seededSellers.push(sellerData);
+    }
+
+    // ==========================================
+    // 4. SEED PRODUCTS (Linked to Seeded Sellers)
+    // ==========================================
+    for (let i = 1; i <= 10; i++) {
+      const productRef = db.collection("products").doc();
+      const seller = seededSellers[i % seededSellers.length];
+
+      const originalPrice = 1000 + i * 150;
+      const discount = 10;
+      const priceWithDiscount = Math.ceil(
+        originalPrice - (originalPrice * discount) / 100,
+      );
+
+      const productData = {
+        productId: productRef.id,
+        createdBy: seller.ownerId,
+        sellerId: seller.sellerId,
+        storeName: seller.storeName,
+        title: `Seeded Demo Product ${i} - Wireless Earbuds`,
+        description: `This is an automatically generated detailed product description for ${seller.storeName}.`,
+        stock: 50,
+        stockStatus: "In Stock",
+        originalPrice: originalPrice,
+        discount: discount,
+        price: priceWithDiscount,
+        brand: i % 2 === 0 ? "Sony" : "Samsung",
+        category: i % 2 === 0 ? "electronics" : "mobiles",
+        features: [
+          "Active Noise Cancellation",
+          "40-hour Battery Life",
+          "Water Resistant IPX4",
+        ],
+        specs: [
+          { name: "bluetooth", value: "v5.3" },
+          { name: "weight", value: "45g" },
+        ],
+        options: [{ name: "color", values: ["black", "white", "blue"] }],
+        images: [
+          {
+            path: `dummy/path${i}.jpg`,
+            url: `https://picsum.photos/seed/prod${i}/500`,
+          },
+        ],
+        createdAt: FieldValue.serverTimestamp(),
       };
 
       batch.set(productRef, productData);
+      seededProducts.push(productData);
     }
 
+    // ==========================================
+    // 5. SEED ORDERS (Linked to Google Customers)
+    // ==========================================
+    for (let i = 0; i < 5; i++) {
+      const orderRef = db.collection("orders").doc();
+      const customerUid = seededCustomerUids[i];
+
+      const p1 = seededProducts[i % seededProducts.length];
+      const p2 = seededProducts[(i + 1) % seededProducts.length];
+
+      const orderItems = [
+        {
+          productId: p1.productId,
+          title: p1.title,
+          price: p1.price,
+          quantity: 1,
+          sellerId: p1.sellerId,
+          storeName: p1.storeName,
+        },
+        {
+          productId: p2.productId,
+          title: p2.title,
+          price: p2.price,
+          quantity: 2,
+          sellerId: p2.sellerId,
+          storeName: p2.storeName,
+        },
+      ];
+
+      const totalAmount = p1.price * 1 + p2.price * 2;
+      const commission = Math.ceil(totalAmount * 0.05);
+
+      const orderData = {
+        userId: customerUid,
+        orderId: orderRef.id,
+        customerName: `John Doe ${i + 1}`,
+        email: `demo.customer${i + 1}@example.com`,
+        address: {
+          firstName: "John",
+          lastName: `Doe ${i + 1}`,
+          email: `demo.customer${i + 1}@example.com`,
+          street: `${100 + i} Test Avenue`,
+          city: "Testville",
+          pinCode: "123456",
+        },
+        items: orderItems,
+        paymentMethod: "CARD",
+        orderStatus: "placed",
+        paymentStatus: "PAID",
+        deliveryStatus: "PENDING",
+        currentStatus: "PLACED",
+        couponCode: null,
+        discountAmount: 0,
+        totalAmount: totalAmount,
+        platformCommission: commission,
+        createdAt: FieldValue.serverTimestamp(),
+      };
+
+      batch.set(orderRef, orderData);
+    }
+
+    // Commit the batch to Firestore
     await batch.commit();
+
+    console.log("Database seeded successfully with Google Auth users!");
+    return {
+      success: true,
+      message:
+        "Successfully seeded Google Users, Sellers, Products, and Orders.",
+    };
   } catch (err) {
-    console.error(err);
+    console.error("Error seeding database:", err.message);
+    throw new functions.https.HttpsError(
+      "internal",
+      "Failed to seed database: " + err.message,
+    );
   }
 });

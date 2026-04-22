@@ -1,8 +1,8 @@
 function SellerActionList({ sellers, view, declineClick, approveClick }) {
   const pendingSellers = sellers.filter(
     (seller) =>
-      seller.status?.toLowerCase() === "pending" ||
-      seller.kycState?.toLowerCase() === "under_review",
+      seller.currentStatus === "APPLICATION_SUBMITTED" ||
+      seller.currentStatus === "KYC_SUBMITTED"
   );
 
   return (
@@ -18,8 +18,7 @@ function SellerActionList({ sellers, view, declineClick, approveClick }) {
         {/* cards */}
         <div className="flex flex-wrap gap-2">
           {pendingSellers.map((seller) => {
-            const isKycPending =
-              seller.kycState?.toLowerCase() === "under_review";
+              const isKycPending = seller.currentStatus === "KYC_SUBMITTED";
 
             return (
               <div className="mt-4 p-2 w-80 border rounded-2xl flex-1">

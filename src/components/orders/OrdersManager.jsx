@@ -1,100 +1,163 @@
-import { useEffect, useState } from "react";
-import ResourceTable from "../tables/ResourceTable";
-import { useAuth } from "../../context/AuthContext";
-import { collection, onSnapshot, query, where } from "firebase/firestore";
-import { db } from "../../firebase/config";
 import { useNavigate } from "react-router-dom";
+import ResourceTable from "../tables/ResourceTable";
+import { db, functions } from "../../firebase/config";
+import {
+  collection,
+  limit,
+  onSnapshot,
+  query,
+  where,
+} from "firebase/firestore";
+import OrderActionList from "./OrderActionList";
+import FeedbackModal from "../ui/misc/FeedbackModal";
+import { useEffect, useState } from "react";
+import { toast } from "react-toastify";
+import { httpsCallable } from "firebase/functions";
 
-function OrdersManager({source}) {
-  // const orders = [
-  //     {
-  //         id: "ODR-001",
-  //         customer: "Bob D.",
-  //         status: "Pending",
-  //         amount: "₹999",
-  //         date: "2026-01-02",
-  //     },
-  //     {
-  //         id: "ODR-002",
-  //         customer: "Alice M.",
-  //         status: "Completed",
-  //         amount: "₹1,499",
-  //         date: "2026-01-01",
-  //     },
-  //     {
-  //         id: "ODR-003",
-  //         customer: "Rahul S.",
-  //         status: "Pending",
-  //         amount: "₹799",
-  //         date: "2025-12-30",
-  //     },
-  //     {
-  //         id: "ODR-004",
-  //         customer: "John K.",
-  //         status: "Cancelled",
-  //         amount: "₹2,299",
-  //         date: "2025-12-28",
-  //     },
-  // ];
-
-  const { user } = useAuth();
+function OrdersManager({ source }) {
   const [orders, setOrders] = useState([]);
-
   const navigate = useNavigate();
 
-  useEffect(() => {
-    const ordersRef = collection(db, "orders");
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [selectedOrder, setSelectedOrder] = useState(null);
 
-    const q =
-      source === "seller" && user?.sellerId
-        ? query(ordersRef, where("sellerId", "==", user.sellerId))
-        : ordersRef;
+  useEffect(() => {
+    if (source !== "admin") return;
+
+    const ordersRef = collection(db, "orders");
+    const q = query(
+      ordersRef,
+      where("currentStatus", "in", ["PENDING", "SHIPPED"]),
+      limit(20),
+    );
 
     const unsubscribe = onSnapshot(q, (snap) => {
-      const data = snap.docs.map((doc) => {
-        const order = doc.data();
-
-        return {
-          id: order.orderId,
-          customer: order.customerName,
-          status: order.status,
-          amount: `₹${order.totalAmount}`,
-          date: order.createdAt?.toDate().toLocaleDateString(),
-        };
-      });
-
-      setOrders(data);
+      if (!snap.empty) {
+        const ordersData = snap.docs.map((doc) => doc.data());
+        setOrders(ordersData);
+      }
     });
 
-    return unsubscribe;
-  }, [source, user]);
+    return () => unsubscribe();
+  }, []);
+
+  const handleOrderUpdate = async (orderId, actionStatus, reason = "") => {
+    try {
+      const updateOrder = httpsCallable(functions, "updateOrder");
+      // Passing reason here in case you update your backend to save it later
+      await updateOrder({ orderId, action: actionStatus, reason });
+      toast.success(`Order successfully marked as ${actionStatus}`);
+    } catch (error) {
+      console.error(error.message);
+      toast.error(error.message);
+    }
+  };
+
+  const handleModalOpen = (order) => {
+    setSelectedOrder(order);
+    setIsModalOpen(true);
+  };
+
+  const handleModalClose = () => {
+    setIsModalOpen(false);
+    setSelectedOrder(null);
+  };
+
+  const handleOrderCancel = async ({ message }) => {
+    if (!selectedOrder) return;
+
+    await handleOrderUpdate(selectedOrder.orderId, "CANCELLED", message);
+    handleModalClose();
+  };
+
+  const handleViewOrder = (row) => {
+    navigate(`/order-details/${row.orderId}`);
+  };
 
   const headers = [
-    { label: "Order ID", key: "id" },
-    { label: "Customer", key: "customer" },
-    { label: "Status", key: "status" },
-    { label: "Amount", key: "amount" },
-    { label: "Date", key: "date" },
-    { label: "Details", key: "details" },
+    { key: "orderId", label: "Order ID", sortable: false },
+    { key: "customerName", label: "Customer", sortable: true },
+    { key: "email", label: "Email", sortable: true },
+    { key: "paymentMethod", label: "Payment", sortable: true },
+    { key: "totalAmount", label: "Total (₹)", sortable: true },
+    { key: "currentStatus", label: "status", sortable: true },
+    // { key: "createdAt", label: "Created At", sortable: true },
+    { key: "actions", label: "Actions", sortable: false },
   ];
 
-  const rowActions = [
-    {
-      label: "View",
-      func: (row) => navigate(`/order-details/${row.id}`),
+  const customRenderers = {
+    currentStatus: {
+      rendererType: "statusDropdown",
+      interactiveStatuses: [],
+      statuses: [
+        { label: "Pending", value: "PENDING" },
+        { label: "Shipped", value: "SHIPPED" },
+        { label: "Delivered", value: "DELIVERED" },
+        { label: "Cancelled", value: "CANCELLED" },
+      ],
     },
+
+    actions: {
+      rendererType: "actionButton",
+      actions: [
+        {
+          label: "View",
+          func: handleViewOrder,
+        },
+      ],
+    },
+  };
+
+  const filters = [
+    { label: "All", key: "ALL", value: "ALL" },
+
+    { label: "Pending", key: "currentStatus", value: "PENDING" },
+    { label: "Shipped", key: "currentStatus", value: "SHIPPED" },
+    { label: "Delivered", key: "currentStatus", value: "DELIVERED" },
+    { label: "Cancelled", key: "currentStatus", value: "CANCELLED" },
+  ];
+
+  const searchFields = [
+    { label: "Order ID", key: "orderId" },
+    { label: "Customer Name", key: "customerName" },
+    { label: "Customer Email", key: "email" },
+    { label: "City", key: "address.city" },
   ];
 
   return (
-    <ResourceTable
-      data={orders}
-      headers={headers}
-      rowActions={rowActions}
-      filterOptions={["All", "Completed", "Pending", "Cancelled"]}
-      searchKeys={["id", "customer"]}
-      title={"Orders"}
-      placeHolder={"Search by Order ID or Customer"}
-    />
+    <section>
+      {source === "admin" && (
+        <OrderActionList
+          orders={orders}
+          viewClick={handleViewOrder}
+          shippedClick={handleOrderUpdate}
+          deliveredClick={handleOrderUpdate}
+          cancelClick={handleModalOpen} // Routes to modal instead of direct update
+        />
+      )}
+
+      {isModalOpen && source === "admin" && (
+        <FeedbackModal
+          onClose={handleModalClose}
+          title="Cancel Order"
+          showRating={false}
+          variant="danger"
+          placeholder="Please explain the reason for cancelling this order..."
+          submitLabel="Confirm Cancellation"
+          onSubmit={handleOrderCancel}
+        />
+      )}
+
+      <ResourceTable
+        title={"Orders"}
+        collectionName="orders"
+        source={source}
+        headers={headers}
+        customRenderers={customRenderers}
+        filters={filters}
+        searchFields={searchFields}
+      />
+    </section>
   );
 }
 

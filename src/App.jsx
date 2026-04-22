@@ -10,8 +10,6 @@ import OrderDetails from "./pages/orders/OrderDetails";
 import Test from "./pages/Test";
 import Admin from "./pages/admin/Admin";
 import AdminDashboard from "./pages/admin/components/AdminDashboard";
-import AdminOrders from "./pages/admin/components/AdminOrders";
-import AdminProducts from "./pages/admin/components/AdminProducts";
 import ManageSellers from "./pages/admin/components/manage-sellers/ManageSellers";
 import ManageUsers from "./pages/admin/components/ManageUsers";
 import StoreManager from "./pages/admin/components/store-manager/StoreManager";
@@ -22,7 +20,8 @@ import SellerProducts from "./pages/seller/components/SellerProducts";
 import SellerApply from "./pages/seller/components/SellerApply";
 import UserProfile from "./pages/profile/UserProfile";
 import SellerProfile from "./pages/profile/SellerProfile";
-import SeedProducts from "./pages/SeedProducts";
+import ProductsManager from "./components/products/ProductsManager";
+import OrdersManager from "./components/orders/OrdersManager";
 
 function App() {
   return (
@@ -39,8 +38,8 @@ function App() {
 
       <Route path="/admin-dashboard" element={<Admin />}>
         <Route index element={<AdminDashboard />} />
-        <Route path="orders" element={<AdminOrders />} />
-        <Route path="products" element={<AdminProducts />} />
+        <Route path="orders" element={<OrdersManager source={"admin"} />} />
+        <Route path="products" element={<ProductsManager source={"admin"} />} />
         <Route path="sellers" element={<ManageSellers />} />
         <Route path="users" element={<ManageUsers />} />
         <Route path="store-manager" element={<StoreManager />} />
@@ -48,13 +47,12 @@ function App() {
 
       <Route path="seller-dashboard" element={<Seller />}>
         <Route index element={<SellerDashboard />} />
-        <Route path="orders" element={<SellerOrders />} />
-        <Route path="products" element={<SellerProducts />} />
+        <Route path="orders" element={<OrdersManager source={"seller"} />} />
+        <Route path="products" element={<ProductsManager source={"seller"} />} />
       </Route>
       <Route path="/profile/user/:uid" element={<UserProfile />} />
       <Route path="/profile/seller/:sid" element={<SellerProfile />} />
       <Route path="/test" element={<Test />} />
-      <Route path="/seed" element={<SeedProducts />} />
     </Routes>
   );
 }
